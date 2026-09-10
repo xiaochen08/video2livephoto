@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 构建产物（不入库，安装包走 GitHub Releases）
+build/
+dist/
+*.spec
+
+# 构建时从仓库根目录同步进 app/ 的副本
+app/livephoto.py
+app/update.py
+app/gui.py
+app/app.ico
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

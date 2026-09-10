@@ -1,0 +1,63 @@
+服务端上传说明
+================================================
+
+你的域名：yiyangzai.cn
+程序里内置的更新地址：https://yiyangzai.cn/livephoto/version.json
+
+【要上传什么】
+
+在网站根目录下建一个 livephoto 文件夹，放两个文件：
+
+  livephoto/version.json                      ← 版本信息（本文件夹里这个）
+  livephoto/视频转实况图-Setup.exe              ← 安装包
+
+最终地址：
+  https://yiyangzai.cn/livephoto/version.json
+  https://yiyangzai.cn/livephoto/视频转实况图-Setup.exe
+
+
+【发新版本时怎么做】
+
+1. 改 version.json 里的 version（比如改成 1.2.0）
+2. 把新的 Setup.exe 覆盖上去（文件名保持不变最省事）
+3. 完事。已经装了旧版的用户下次打开程序就会收到提示。
+
+注意：version 必须比用户当前版本大，程序才会提示。
+     版本号按数字比较，1.10.0 大于 1.9.9（不是按字符串比）。
+
+
+【version.json 字段说明】
+
+  version    必填。最新版本号，例如 "1.2.0"
+  url        选填。安装包下载地址。不填就跳到主页
+  notes      选填。更新说明，会显示在提示框里
+  mandatory  选填。true/false，目前没用上（留着以后强制更新）
+
+也支持只写一行纯文本版本号，例如：
+  1.2.0
+但推荐用 JSON，因为能带上更新说明。
+
+
+【几个注意点】
+
+1. 必须能 HTTPS 访问。程序里写死的是 https，如果证书有问题会连不上。
+2. 文件不能被 CDN 长期缓存，否则发了新版用户还是拿到旧的。
+   建议给 version.json 设置较短的缓存时间（比如 60 秒），
+   或者在服务器上给它加 Cache-Control: no-cache。
+   程序请求时已经带了 no-cache 头，但服务端配合一下更保险。
+3. 文件名里有中文，服务器要正确处理 URL 编码（一般默认没问题）。
+   如果遇到 404，可以改成纯英文文件名，例如：
+       "url": "https://yiyangzai.cn/livephoto/LivePhotoSetup.exe"
+   然后同步改一下本文件里的 url 字段。
+
+【临时换地址测试】
+
+程序支持用环境变量覆盖更新地址，方便你先用测试服试：
+
+  set LIVEPHOTO_UPDATE_URL=https://你的测试地址/version.json
+  视频转实况图.exe
+
+或者用绿色版命令行验证：
+
+  python livephoto.py check-update
+  python livephoto.py check-update --url https://别的地址/version.json
