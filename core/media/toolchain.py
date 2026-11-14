@@ -57,6 +57,11 @@ class Toolchain:
 
     @classmethod
     def discover(cls) -> "Toolchain":
+        from core.media.toolchain_manifest import (
+            EXPECTED_FFMPEG_SHA256,
+            EXPECTED_FFPROBE_SHA256,
+        )
+
         ffmpeg = shutil.which("ffmpeg")
         ffprobe = shutil.which("ffprobe")
         if not ffmpeg or not ffprobe:
@@ -69,7 +74,12 @@ class Toolchain:
                 message="缺少可用的 ffmpeg 或 ffprobe",
                 diagnostics={"ffmpeg": ffmpeg, "ffprobe": ffprobe},
             )
-        return cls.from_paths(ffmpeg, ffprobe)
+        return cls.from_paths(
+            ffmpeg,
+            ffprobe,
+            expected_ffmpeg_sha256=EXPECTED_FFMPEG_SHA256,
+            expected_ffprobe_sha256=EXPECTED_FFPROBE_SHA256,
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {

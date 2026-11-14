@@ -8,6 +8,7 @@
 
 - `core/protocol/media.py`：版本化数据契约与错误结构。
 - `core/media/toolchain.py`：ffmpeg/ffprobe 自检、SHA-256、无 shell 子进程、进程内存采样。
+- `core/media/toolchain_manifest.py`：开发环境固定版本和 SHA-256 指纹。
 - `core/media/process.py`：统一取消令牌和子进程回收。
 - `core/media/source_identity.py`：规范化路径、文件身份、抽样/完整哈希、源变化检查和物理路径冲突检查。
 - `core/media/fragment_inspector.py`：流式盒头检查、`moof`/`mvex` 检测、截断/越界拒绝。
@@ -22,7 +23,7 @@
 
 | 项目 | 结果 | 证据 |
 |---|---|---|
-| 契约序列化、整数 PTS、错误码 | PASS | `21 passed` 中的契约测试 |
+| 契约序列化、整数 PTS、错误码 | PASS | `22 passed` 中的契约测试 |
 | Unicode/中文路径、源身份、变化检测 | PASS | `tests/media/test_source_identity.py` |
 | 普通 MP4/MOV 容器探测、H.264/AAC、未知色彩 | PASS | 普通样片与改扩展名样片 |
 | B 帧显示顺序 | PASS | H.264 `bf=2` fixture，缓存含 `pict_type=B` |

@@ -25,3 +25,9 @@ def test_toolchain_rejects_hash_mismatch(ffmpeg_path: str, ffprobe_path: str) ->
             expected_ffmpeg_sha256="0" * 64,
         )
     assert exc.value.code == "TOOLCHAIN_MISMATCH"
+
+
+def test_default_discovery_uses_the_frozen_manifest() -> None:
+    toolchain = Toolchain.discover()
+    assert toolchain.ffmpeg.version == "N-120646-g6711c6a89b-20250810"
+    assert toolchain.ffprobe.version == "N-120646-g6711c6a89b-20250810"
