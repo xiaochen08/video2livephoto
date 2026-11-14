@@ -127,6 +127,7 @@ def _stream(raw: dict[str, Any]) -> StreamSummary:
         channel_layout=raw.get("channel_layout"),
         sample_format=raw.get("sample_fmt"),
         disposition={str(k): int(v) for k, v in (raw.get("disposition") or {}).items()},
+        attached_picture=bool((raw.get("disposition") or {}).get("attached_pic", 0)),
         tags=_mapping(raw.get("tags")),
         side_data_types=tuple(
             str(item.get("side_data_type", "")) for item in side_data
@@ -248,7 +249,12 @@ def probe_media(
             message="源文件在探测期间发生变化",
         )
     streams = tuple(_stream(item) for item in raw.get("streams", []))
-    videos = tuple(item for item in streams if item.codec_type == "video")
+    attached_pictures = tuple(item for item in streams if item.attached_picture)
+    videos = tuple(
+        item
+        for item in streams
+        if item.codec_type == "video" and not item.attached_picture
+    )
     if not videos:
         raise MediaError(
             code="NO_VIDEO_STREAM",
@@ -288,8 +294,11 @@ def probe_media(
         selected_video_reason=reason,
         video_stream=selected,
         audio_streams=tuple(item for item in streams if item.codec_type == "audio"),
+        attached_picture_streams=attached_pictures,
         subtitle_and_data_streams=tuple(
-            item for item in streams if item.codec_type not in {"video", "audio"}
+            item
+            for item in streams
+            if item.codec_type not in {"video", "audio"} and not item.attached_picture
         ),
         color=selected.color,
         fragment=fragment,

@@ -46,3 +46,80 @@ def test_probe_cancellation_returns_structured_error(
         assert getattr(exc, "code", None) == "CANCELLED"
     else:
         raise AssertionError("probe should have been cancelled")
+
+
+def test_probe_excludes_attached_picture_from_primary_video_selection(
+    ffmpeg_path: str, ffprobe_path: str, tmp_path: Path
+) -> None:
+    cover = tmp_path / "cover.jpg"
+    sample = tmp_path / "multi-video-attached-pic.mp4"
+    import subprocess
+
+    subprocess.run(
+        [
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=yellow:s=160x90",
+            "-frames:v",
+            "1",
+            str(cover),
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=160x90:rate=30",
+            "-loop",
+            "1",
+            "-i",
+            str(cover),
+            "-t",
+            "1",
+            "-map",
+            "0:v",
+            "-map",
+            "1:v",
+            "-map",
+            "2:v",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:v:2",
+            "mjpeg",
+            "-disposition:v:0",
+            "default",
+            "-disposition:v:1",
+            "default",
+            "-disposition:v:2",
+            "attached_pic",
+            "-metadata:s:v:2",
+            "mimetype=image/jpeg",
+            str(sample),
+        ],
+        check=True,
+    )
+    result = probe_media(
+        sample, toolchain=Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    )
+    assert result.selected_video_stream == 0
+    assert [stream.index for stream in result.attached_picture_streams] == [2]
+    assert any("multiple video streams" in item for item in result.diagnostics)

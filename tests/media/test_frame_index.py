@@ -101,6 +101,21 @@ def test_cache_path_cannot_be_the_source_file(
     assert exc.value.code == "PATH_CONFLICT"
 
 
+def test_cache_root_file_returns_structured_unavailable_error(
+    small_mp4: Path,
+    ffmpeg_path: str,
+    ffprobe_path: str,
+    tmp_path: Path,
+) -> None:
+    occupied = tmp_path / "cache-root-file"
+    occupied.write_bytes(b"occupied")
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    with pytest.raises(MediaError) as exc:
+        build_frame_index(small_mp4, cache_root=occupied, toolchain=toolchain)
+    assert exc.value.code == "CACHE_PATH_UNAVAILABLE"
+    assert exc.value.diagnostics["reason"] == "not_directory"
+
+
 def test_fragmented_media_can_build_direct_index_when_ffprobe_is_trustworthy(
     fragmented_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path
 ) -> None:

@@ -115,3 +115,71 @@ def fragmented_mp4(tmp_path: Path, ffmpeg_path: str) -> Path:
         ],
     )
     return path
+
+
+@pytest.fixture()
+def fragmented_av_mp4(tmp_path: Path, ffmpeg_path: str) -> Path:
+    path = tmp_path / "fragmented-av.mp4"
+    _run_ffmpeg(
+        ffmpeg_path,
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000",
+            "-t",
+            "1",
+            "-c:v",
+            "libx264",
+            "-bf",
+            "2",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+frag_keyframe+empty_moov+default_base_moof",
+            str(path),
+        ],
+    )
+    return path
+
+
+@pytest.fixture()
+def negative_pts_edit_list_mp4(tmp_path: Path, ffmpeg_path: str) -> Path:
+    path = tmp_path / "negative-audio-pts-edit-list.mp4"
+    _run_ffmpeg(
+        ffmpeg_path,
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000",
+            "-t",
+            "1",
+            "-filter_complex",
+            "[1:a]adelay=500:all=1[a]",
+            "-map",
+            "0:v",
+            "-map",
+            "[a]",
+            "-c:v",
+            "libx264",
+            "-bf",
+            "2",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            str(path),
+        ],
+    )
+    return path

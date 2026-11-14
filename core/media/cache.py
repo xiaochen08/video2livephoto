@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable
 
+from core.media.errors import MediaError
 from core.protocol.media import CACHE_SCHEMA_VERSION, FrameRef, Rational, SourceIdentity
 
 
@@ -42,7 +43,33 @@ class FrameIndexCache:
         stream_index: int,
     ) -> "FrameIndexCache":
         root_path = Path(root).resolve()
-        root_path.mkdir(parents=True, exist_ok=True)
+        try:
+            if root_path.exists() and not root_path.is_dir():
+                raise MediaError(
+                    code="CACHE_PATH_UNAVAILABLE",
+                    stage="frame_index",
+                    path=str(root_path),
+                    stream_index=stream_index,
+                    retryable=True,
+                    message="帧索引缓存根路径不是目录",
+                    diagnostics={"reason": "not_directory"},
+                )
+            root_path.mkdir(parents=True, exist_ok=True)
+        except MediaError:
+            raise
+        except OSError as exc:
+            raise MediaError(
+                code="CACHE_PATH_UNAVAILABLE",
+                stage="frame_index",
+                path=str(root_path),
+                stream_index=stream_index,
+                retryable=True,
+                message="无法创建帧索引缓存目录",
+                diagnostics={
+                    "errno": exc.errno,
+                    "error": str(exc),
+                },
+            ) from exc
         key = cache_key(source, toolchain, mode)
         path = root_path / f"index-{key}.sqlite3"
         if path.exists():

@@ -46,6 +46,156 @@ def _read_pts(index_path: str | None) -> list[int | None]:
         ]
 
 
+def _read_audio_packets(
+    path: Path, toolchain: Toolchain, timeout_seconds: float
+) -> dict[int, list[tuple[int | None, int | None, int | None]]]:
+    try:
+        result = subprocess.run(
+            [
+                toolchain.ffprobe.path,
+                "-v",
+                "error",
+                "-select_streams",
+                "a",
+                "-show_packets",
+                "-show_entries",
+                "packet=stream_index,pts,dts,duration:packet_side_data=",
+                "-of",
+                "compact=p=0:nk=0",
+                str(path),
+            ],
+            shell=False,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            creationflags=process_creation_flags(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise MediaError(
+            code="FFPROBE_TIMEOUT",
+            stage="normalize",
+            path=str(path),
+            stream_index=None,
+            retryable=True,
+            message="读取音频包时间轴超时",
+            diagnostics={"timeout_seconds": timeout_seconds},
+        ) from exc
+    except OSError as exc:
+        raise MediaError(
+            code="FFPROBE_FAILED",
+            stage="normalize",
+            path=str(path),
+            stream_index=None,
+            retryable=True,
+            message="无法启动用于音频时间轴校验的 ffprobe",
+            diagnostics={"error": str(exc)},
+        ) from exc
+    if result.returncode != 0:
+        raise MediaError(
+            code="FFPROBE_FAILED",
+            stage="normalize",
+            path=str(path),
+            stream_index=None,
+            retryable=False,
+            message="无法读取规范化校验所需的音频包时间轴",
+            diagnostics={
+                "returncode": result.returncode,
+                "stderr": result.stderr[-4000:],
+            },
+        )
+    packets: dict[int, list[tuple[int | None, int | None, int | None]]] = {}
+    for line in result.stdout.splitlines():
+        fields = {
+            key: value
+            for token in line.split("|")
+            if "=" in token
+            for key, value in [token.split("=", 1)]
+        }
+        if fields.get("stream_index") is None:
+            continue
+
+        def _int(value: str | None) -> int | None:
+            if value in (None, "", "N/A"):
+                return None
+            return int(value)
+
+        index = int(fields["stream_index"])
+        packets.setdefault(index, []).append(
+            (
+                _int(fields.get("pts")),
+                _int(fields.get("dts")),
+                _int(fields.get("duration")),
+            )
+        )
+    return packets
+
+
+def _compare_audio_packets(
+    source: dict[int, list[tuple[int | None, int | None, int | None]]],
+    output: dict[int, list[tuple[int | None, int | None, int | None]]],
+) -> dict[str, dict[str, int | None]]:
+    if set(source) != set(output):
+        raise MediaError(
+            code="NORMALIZATION_AUDIO_MISMATCH",
+            stage="normalize",
+            path=None,
+            stream_index=None,
+            retryable=False,
+            message="规范化前后的音频流集合不一致",
+            diagnostics={
+                "source_streams": sorted(source),
+                "output_streams": sorted(output),
+            },
+        )
+    report: dict[str, dict[str, int | None]] = {}
+    for stream_index in sorted(source):
+        source_packets = source[stream_index]
+        output_packets = output[stream_index]
+        if len(source_packets) != len(output_packets):
+            raise MediaError(
+                code="NORMALIZATION_AUDIO_MISMATCH",
+                stage="normalize",
+                path=None,
+                stream_index=stream_index,
+                retryable=False,
+                message="规范化前后的音频包数量不一致",
+                diagnostics={
+                    "source_count": len(source_packets),
+                    "output_count": len(output_packets),
+                },
+            )
+        offsets = {
+            output_pts - source_pts
+            for source_packet, output_packet in zip(source_packets, output_packets)
+            for source_pts, output_pts in [(source_packet[0], output_packet[0])]
+            if source_pts is not None and output_pts is not None
+        }
+        if len(offsets) > 1:
+            raise MediaError(
+                code="NORMALIZATION_AUDIO_MISMATCH",
+                stage="normalize",
+                path=None,
+                stream_index=stream_index,
+                retryable=False,
+                message="规范化前后的音频 PTS 偏移不一致",
+                diagnostics={"offsets": sorted(offsets)},
+            )
+        report[str(stream_index)] = {
+            "packet_count": len(source_packets),
+            "pts_offset": next(iter(offsets)) if offsets else None,
+        }
+    return report
+
+
+def _time_base_payload(stream) -> dict[str, int] | None:
+    if stream.time_base is None:
+        return None
+    return {"num": stream.time_base.num, "den": stream.time_base.den}
+
+
 def normalize_fragmented(
     path: str | Path,
     *,
@@ -71,9 +221,32 @@ def normalize_fragmented(
         )
 
     root = Path(cache_root).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    work = root / f"normalize-{uuid.uuid4().hex}"
-    work.mkdir()
+    try:
+        if root.exists() and not root.is_dir():
+            raise MediaError(
+                code="CACHE_PATH_UNAVAILABLE",
+                stage="normalize",
+                path=str(root),
+                stream_index=None,
+                retryable=True,
+                message="规范化缓存根路径不是目录",
+                diagnostics={"reason": "not_directory"},
+            )
+        root.mkdir(parents=True, exist_ok=True)
+        work = root / f"normalize-{uuid.uuid4().hex}"
+        work.mkdir()
+    except MediaError:
+        raise
+    except OSError as exc:
+        raise MediaError(
+            code="CACHE_PATH_UNAVAILABLE",
+            stage="normalize",
+            path=str(root),
+            stream_index=None,
+            retryable=True,
+            message="无法创建规范化缓存目录",
+            diagnostics={"errno": exc.errno, "error": str(exc)},
+        ) from exc
     partial = work / "normalized.partial.mp4"
     final = work / "normalized.mp4"
     if paths_refer_same_file(source, final):
@@ -93,6 +266,9 @@ def normalize_fragmented(
         toolchain=toolchain,
         token=token,
         timeout_seconds=timeout_seconds,
+    )
+    source_audio_packets = _read_audio_packets(
+        source, toolchain, min(timeout_seconds, 120.0)
     )
     args = [
         toolchain.ffmpeg.path,
@@ -206,6 +382,12 @@ def normalize_fragmented(
             token=token,
             timeout_seconds=timeout_seconds,
         )
+        output_audio_packets = _read_audio_packets(
+            partial, toolchain, min(timeout_seconds, 120.0)
+        )
+        audio_timeline = _compare_audio_packets(
+            source_audio_packets, output_audio_packets
+        )
         source_pts = _read_pts(source_index.index_path)
         output_pts = _read_pts(output_index.index_path)
         offsets = {
@@ -262,7 +444,32 @@ def normalize_fragmented(
                 "frame_index_status": output_index.status,
                 "source_frame_count": source_index.frame_count,
                 "output_frame_count": output_index.frame_count,
+                "video_timeline": {
+                    "source": {
+                        "first_pts": source_index.first_pts,
+                        "last_pts": source_index.last_pts,
+                        "frame_count": source_index.frame_count,
+                        "time_base": _time_base_payload(source_probe.video_stream),
+                    },
+                    "normalized": {
+                        "first_pts": output_index.first_pts,
+                        "last_pts": output_index.last_pts,
+                        "frame_count": output_index.frame_count,
+                        "time_base": _time_base_payload(output_probe.video_stream),
+                    },
+                },
+                "audio_time_bases": {
+                    "source": {
+                        str(stream.index): _time_base_payload(stream)
+                        for stream in source_probe.audio_streams
+                    },
+                    "normalized": {
+                        str(stream.index): _time_base_payload(stream)
+                        for stream in output_probe.audio_streams
+                    },
+                },
                 "source_to_normalized_pts_offset": timeline_offset,
+                "audio_timeline": audio_timeline,
                 "source_sha256": final_identity.full_sha256,
                 "ffmpeg_peak_private_bytes": memory_sampler.stop(),
                 "elapsed_seconds": time.perf_counter() - started,

@@ -120,6 +120,7 @@ class StreamSummary:
     channel_layout: str | None
     sample_format: str | None
     disposition: dict[str, int]
+    attached_picture: bool
     tags: dict[str, str]
     side_data_types: tuple[str, ...]
 
@@ -154,6 +155,7 @@ class MediaProbeResult:
     selected_video_reason: str
     video_stream: StreamSummary
     audio_streams: tuple[StreamSummary, ...]
+    attached_picture_streams: tuple[StreamSummary, ...]
     subtitle_and_data_streams: tuple[StreamSummary, ...]
     color: ColorSummary
     fragment: FragmentSummary
