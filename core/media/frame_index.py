@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from core.media.cache import FrameIndexCache
 from core.media.errors import MediaError
+from core.media.process import CancellationToken, kill_process
 from core.media.probe import probe_media
 from core.media.source_identity import (
     capture_identity,
@@ -21,18 +22,6 @@ from core.media.toolchain import (
     query_private_bytes,
 )
 from core.protocol.media import FrameIndexReport, FrameRef, Rational
-
-
-class CancellationToken:
-    def __init__(self) -> None:
-        self._event = threading.Event()
-
-    def cancel(self) -> None:
-        self._event.set()
-
-    @property
-    def cancelled(self) -> bool:
-        return self._event.is_set()
 
 
 def _int(value: str | None) -> int | None:
@@ -75,15 +64,6 @@ def _make_frame(fields: dict[str, str], index: int, time_base: Rational) -> Fram
     )
 
 
-def _kill_process(process: subprocess.Popen[str]) -> None:
-    if process.poll() is None:
-        process.kill()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.terminate()
-
-
 def build_frame_index(
     path: str | Path,
     *,
@@ -110,7 +90,10 @@ def build_frame_index(
     toolchain = toolchain or Toolchain.discover()
     token = token or CancellationToken()
     probe = probe_media(
-        source, toolchain=toolchain, timeout_seconds=min(timeout_seconds, 120.0)
+        source,
+        toolchain=toolchain,
+        token=token,
+        timeout_seconds=min(timeout_seconds, 120.0),
     )
     time_base = probe.video_stream.time_base
     if time_base is None:
@@ -200,7 +183,7 @@ def build_frame_index(
         stream_closed = False
         while not stream_closed:
             if token.cancelled:
-                _kill_process(process)
+                kill_process(process)
                 cache.mark_incomplete("cancelled")
                 raise MediaError(
                     code="CANCELLED",
@@ -211,7 +194,7 @@ def build_frame_index(
                     message="帧索引已取消",
                 )
             if time.monotonic() - last_activity > timeout_seconds:
-                _kill_process(process)
+                kill_process(process)
                 cache.mark_incomplete("timeout")
                 raise MediaError(
                     code="FFPROBE_TIMEOUT",
@@ -344,11 +327,11 @@ def build_frame_index(
         )
     except MediaError:
         if process.poll() is None:
-            _kill_process(process)
+            kill_process(process)
         raise
     except Exception as exc:
         if process.poll() is None:
-            _kill_process(process)
+            kill_process(process)
         cache.mark_incomplete(type(exc).__name__)
         raise MediaError(
             code="FRAME_INDEX_FAILED",

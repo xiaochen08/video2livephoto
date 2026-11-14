@@ -66,7 +66,16 @@ def test_cancelled_index_is_not_reported_as_complete(
         )
     assert exc.value.code == "CANCELLED"
     databases = list((tmp_path / "cache").glob("*.sqlite3"))
-    assert databases
+    if databases:
+        import sqlite3
+
+        with sqlite3.connect(databases[0]) as db:
+            assert (
+                db.execute("SELECT value FROM metadata WHERE key='status'").fetchone()[
+                    0
+                ]
+                != "complete"
+            )
 
 
 def test_completed_cache_is_reused_when_source_and_toolchain_match(

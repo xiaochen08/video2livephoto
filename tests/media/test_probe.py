@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.media.probe import probe_media
+from core.media.process import CancellationToken
 from core.media.toolchain import Toolchain
 
 
@@ -31,3 +32,17 @@ def test_probe_does_not_treat_extension_as_container_type(
     result = probe_media(renamed, toolchain=toolchain)
     assert result.container.format_names
     assert result.source_identity.canonical_path.endswith("renamed.MOV")
+
+
+def test_probe_cancellation_returns_structured_error(
+    small_mp4: Path, ffmpeg_path: str, ffprobe_path: str
+) -> None:
+    token = CancellationToken()
+    token.cancel()
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    try:
+        probe_media(small_mp4, toolchain=toolchain, token=token)
+    except Exception as exc:
+        assert getattr(exc, "code", None) == "CANCELLED"
+    else:
+        raise AssertionError("probe should have been cancelled")

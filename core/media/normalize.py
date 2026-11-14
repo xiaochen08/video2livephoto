@@ -8,8 +8,9 @@ from pathlib import Path
 
 from core.media.errors import MediaError
 from core.media.fragment_inspector import inspect_fragments
-from core.media.frame_index import CancellationToken, build_frame_index
+from core.media.frame_index import build_frame_index
 from core.media.probe import probe_media
+from core.media.process import CancellationToken
 from core.media.source_identity import (
     capture_identity,
     identities_match,
@@ -85,7 +86,7 @@ def normalize_fragmented(
             message="规范化输出路径不能与源文件相同",
         )
 
-    source_probe = probe_media(source, toolchain=toolchain)
+    source_probe = probe_media(source, toolchain=toolchain, token=token)
     source_index = build_frame_index(
         source,
         cache_root=work / "source-index",
