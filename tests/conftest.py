@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture(scope="session")
+def ffmpeg_path() -> str:
+    path = shutil.which("ffmpeg")
+    if not path:
+        pytest.skip("ffmpeg is not available")
+    return path
+
+
+@pytest.fixture(scope="session")
+def ffprobe_path() -> str:
+    path = shutil.which("ffprobe")
+    if not path:
+        pytest.skip("ffprobe is not available")
+    return path
+
+
+def _run_ffmpeg(ffmpeg: str, args: list[str]) -> None:
+    result = subprocess.run(
+        [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr)
+
+
+@pytest.fixture()
+def small_mp4(tmp_path: Path, ffmpeg_path: str) -> Path:
+    path = tmp_path / "普通 中文 sample.mp4"
+    _run_ffmpeg(
+        ffmpeg_path,
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=30",
+            "-t",
+            "1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000",
+            "-shortest",
+            "-c:v",
+            "libx264",
+            "-bf",
+            "2",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            str(path),
+        ],
+    )
+    return path
+
+
+@pytest.fixture()
+def vfr_mp4(tmp_path: Path, ffmpeg_path: str) -> Path:
+    path = tmp_path / "vfr.mp4"
+    _run_ffmpeg(
+        ffmpeg_path,
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=30",
+            "-t",
+            "1.2",
+            "-vf",
+            "select='if(lt(n,10),1,not(mod(n,3)))',setpts='if(lt(N,10),N,10+(N-10)*3)/30/TB'",
+            "-fps_mode",
+            "vfr",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
+    )
+    return path
+
+
+@pytest.fixture()
+def fragmented_mp4(tmp_path: Path, ffmpeg_path: str) -> Path:
+    path = tmp_path / "fragmented.mp4"
+    _run_ffmpeg(
+        ffmpeg_path,
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=30",
+            "-t",
+            "1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+frag_keyframe+empty_moov+default_base_moof",
+            str(path),
+        ],
+    )
+    return path
