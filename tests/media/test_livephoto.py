@@ -149,3 +149,22 @@ def test_livephoto_mebx_edit_list_tracks_nonzero_still_time(
     validation = result.manifest.validation
     assert validation["timed_metadata_still_units"] == 200
     assert validation["timed_metadata_edit_list"] == [(200, -1), (1, 0)]
+
+
+def test_livephoto_normalizes_fragmented_segment_before_mebx(
+    fragmented_mp4: Path,
+    ffmpeg_path: str,
+    ffprobe_path: str,
+    tmp_path: Path,
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    result = pack_live_photo(
+        fragmented_mp4,
+        output_dir=tmp_path / "LivePhoto",
+        clip_id="clip-fmp4",
+        pairing_uuid="12345678-1234-5678-1234-567812345679",
+        toolchain=toolchain,
+    )
+    assert result.manifest is not None
+    assert result.manifest.validation["timed_metadata_track"] is True
+    assert result.manifest.validation["timed_metadata_codec"] == "mebx"
