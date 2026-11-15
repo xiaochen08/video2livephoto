@@ -1,6 +1,6 @@
 # V1.0 最终内部验收矩阵
 
-源码当前绑定：`e788871fdc57c77833cf459b2bcc074aadc23fc0`；R 复审报告绑定前一稳定候选 `589c41750f7c3ac3c7216c22dd3632b7638ef318`，复审后功能补强见 `docs/execution/POST_REVIEW_FUNCTIONAL.md`。
+源码当前绑定：`ed115dfbe4318a0b069f3d8a66a645cc559d8d96`；R 复审报告绑定前一稳定候选 `589c41750f7c3ac3c7216c22dd3632b7638ef318`，复审后功能补强见 `docs/execution/POST_REVIEW_FUNCTIONAL.md`。
 
 | 项目 | 状态 | 证据 |
 |---|---|---|
@@ -16,7 +16,7 @@
 ## 固定执行结果
 
 ```text
-py -3 -m pytest -q                         PASS  77 passed in 17.46s
+py -3 -m pytest -q                         PASS  77 passed in 16.96s
 py -3 -m compileall -q core desktop tests packaging  PASS
 py -3 -m ruff check core desktop tests packaging    PASS
 npm run build                              PASS

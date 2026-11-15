@@ -33,7 +33,7 @@
 
 ## 复审后功能提交
 
-- 当前分支功能与台账 HEAD：`e788871fdc57c77833cf459b2bcc074aadc23fc0`
+- 当前分支功能与台账 HEAD：`ed115dfbe4318a0b069f3d8a66a645cc559d8d96`
 - M1 负 PTS/edit list/fMP4 证据：`5e71b2a`；多视频无默认歧义拒绝：`cfa24fb`。
 - M6 导出报告、自动轮询和失败重试：`d89e619`、`bdf32ee`、`0187413`。
 - M5 本地 `mebx` timed metadata 轨和 fMP4 片段回归：`6d7483b`、`014d2a3`。

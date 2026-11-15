@@ -3,7 +3,7 @@
 ## 绑定版本
 
 - 分支：`codex/v1-integration`
-- 当前集成代码/台账 HEAD：`e788871fdc57c77833cf459b2bcc074aadc23fc0`
+- 当前集成代码/台账 HEAD：`ed115dfbe4318a0b069f3d8a66a645cc559d8d96`
 - R 已审代码与测试候选：`589c41750f7c3ac3c7216c22dd3632b7638ef318`
 - 原始 main：`e6231886298e0a4bccf0e6591784a2fdba736db6`
 - M0/M1 承接：`a8dbc02bd56e63c0c71e9094858cc0e87611bdd6`
