@@ -892,7 +892,7 @@ class JsonlIpcServer:
             service = self._ensure_project(str(params.get("project_id") or ""))
             video = (media_info(service.snapshot).get("video_streams") or [{}])[0]
             audio = bool(media_info(service.snapshot).get("audio_streams"))
-            return {"ok": True, "source": {"url": None, "kind": "none", "width": int(video.get("width", 0)), "height": int(video.get("height", 0)), "has_audio": audio, "note": "当前桌面桥接尚未注册安全媒体协议；可使用精确帧预览。"}}
+            return {"ok": True, "source": {"url": None, "kind": "none", "width": int(video.get("width", 0)), "height": int(video.get("height", 0)), "has_audio": audio, "note": None, "_source_path": service.snapshot.source_path}}
         if method == "preview.cancel":
             return self._cancel_preview(request, params)
         if method == "preview.getFrame":

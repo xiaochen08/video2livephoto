@@ -34,6 +34,8 @@ def test_contract_open_and_timeline_returns_string_pts(
     assert project["project_id"] == project_id
     assert project["timeline"]["frame_count"] == imported["project"]["frame_count"]
     assert all(item["pts"] is None or isinstance(item["pts"], str) for item in project["timeline"]["cuts"])
+    source = server.handle(_request("preview.getSource", {"project_id": project_id}))
+    assert source["source"]["_source_path"] == str(small_mp4.resolve())
     frame = server.handle(_request("preview.getFrame", {"project_id": project_id, "frame": 0, "size": "thumb"}))
     assert frame["frame"]["exact"] is True
     assert frame["frame"]["url"].startswith("data:image/jpeg;base64,")

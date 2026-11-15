@@ -1,10 +1,18 @@
-const { app, BrowserWindow, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, protocol } = require("electron");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
-const { existsSync } = require("node:fs");
+const { createReadStream, existsSync, statSync } = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
+const { Readable } = require("node:stream");
 const { SystemLogger } = require("./logger.cjs");
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "v2lp-media",
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+  },
+]);
 
 class PythonBridge {
   constructor(logger) {
@@ -122,6 +130,88 @@ class PythonBridge {
 
 let appLogger;
 const bridge = new PythonBridge(null);
+const mediaSources = new Map();
+const mediaSourceTokensByProject = new Map();
+const MEDIA_SOURCE_LIMIT = 32;
+
+function rememberMediaSource(projectId, sourcePath) {
+  const existing = mediaSourceTokensByProject.get(projectId);
+  if (existing && mediaSources.has(existing)) return existing;
+  const token = crypto.randomUUID();
+  mediaSources.set(token, { projectId, sourcePath });
+  mediaSourceTokensByProject.set(projectId, token);
+  while (mediaSources.size > MEDIA_SOURCE_LIMIT) {
+    const oldest = mediaSources.keys().next().value;
+    if (!oldest) break;
+    const source = mediaSources.get(oldest);
+    mediaSources.delete(oldest);
+    if (source && mediaSourceTokensByProject.get(source.projectId) === oldest) mediaSourceTokensByProject.delete(source.projectId);
+  }
+  return token;
+}
+
+function sourceUrlFor(projectId, sourcePath) {
+  const token = rememberMediaSource(projectId, sourcePath);
+  return `v2lp-media://${token}/source`;
+}
+
+function playableSourceResponse(response, params) {
+  if (!response?.ok || !response.source) return response;
+  const { _source_path: privatePath, ...source } = response.source;
+  const sourcePath = String(privatePath || "");
+  const projectId = String(params?.project_id || "");
+  if (!projectId || !sourcePath || !existsSync(sourcePath)) {
+    return { ...response, source: { ...source, url: null, kind: "none", note: "当前源文件不可播放，可使用精确帧预览。" } };
+  }
+  return {
+    ...response,
+    source: {
+      ...source,
+      url: sourceUrlFor(projectId, sourcePath),
+      kind: "source",
+    },
+  };
+}
+
+function registerMediaProtocol() {
+  protocol.handle("v2lp-media", async (request) => {
+    try {
+      const token = new URL(request.url).hostname;
+      const entry = mediaSources.get(token);
+      if (!entry || !existsSync(entry.sourcePath)) return new Response("Not found", { status: 404 });
+      const size = statSync(entry.sourcePath).size;
+      const range = request.headers.get("range");
+      const contentType = entry.sourcePath.toLowerCase().endsWith(".mov") ? "video/quicktime" : "video/mp4";
+      const headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Type": contentType,
+        "Cache-Control": "no-store",
+      };
+      if (request.method === "HEAD") {
+        headers["Content-Length"] = String(size);
+        return new Response(null, { status: 200, headers });
+      }
+      if (!range) {
+        headers["Content-Length"] = String(size);
+        return new Response(Readable.toWeb(createReadStream(entry.sourcePath)), { status: 200, headers });
+      }
+      const match = /^bytes=(\d*)-(\d*)$/i.exec(range.trim());
+      if (!match) return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${size}` } });
+      const start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2] || 0));
+      const requestedEnd = match[2] ? Number(match[2]) : size - 1;
+      const end = Math.min(size - 1, requestedEnd);
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end || start >= size) {
+        return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${size}` } });
+      }
+      headers["Content-Length"] = String(end - start + 1);
+      headers["Content-Range"] = `bytes ${start}-${end}/${size}`;
+      return new Response(Readable.toWeb(createReadStream(entry.sourcePath, { start, end })), { status: 206, headers });
+    } catch (error) {
+      appLogger?.warn("media.protocol.error", { url: request.url, message: String(error) });
+      return new Response("Media unavailable", { status: 404 });
+    }
+  });
+}
 
 const ALLOWED_REQUEST_METHODS = new Set([
   "ping", "connect", "import", "open", "state", "frame_window", "preview_frame", "add_cut", "move_cut", "delete_cut", "merge_segments", "set_segment_audio", "set_all_audio", "mark_cut_checked", "undo", "redo", "confirm_export", "start_export", "export_status", "pause_export", "resume_export", "confirm_recovery", "cancel_export", "retry_export",
@@ -184,10 +274,12 @@ app.whenReady().then(() => {
       if (!win.isDestroyed()) win.webContents.send("m3:event", event);
     }
   });
+  registerMediaProtocol();
   bridge.start();
-  ipcMain.handle("m3:request", (event, method, params = {}) => {
+  ipcMain.handle("m3:request", async (event, method, params = {}) => {
     assertRequestAllowed(event, method, params);
-    return bridge.request(method, params);
+    const response = await bridge.request(method, params);
+    return method === "preview.getSource" ? playableSourceResponse(response, params) : response;
   });
   ipcMain.handle("m3:request-cancel", (event, previewRequestId) => {
     if (!BrowserWindow.fromWebContents(event.sender)) throw new Error("IPC_SENDER_INVALID");
