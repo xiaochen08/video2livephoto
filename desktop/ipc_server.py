@@ -374,11 +374,13 @@ class JsonlIpcServer:
                 raise M3ProjectError(
                     "RETRY_NOT_AVAILABLE", "只有失败任务可以从界面重试；中断任务请先确认恢复。"
                 )
+            retried = self.queue_store.retry(job.job_id)
             self._mark_export_report_in_progress(
-                Path(job.output_dir).resolve() if job.output_dir else self.project_path.parent / "导出",
+                Path(job.output_dir).resolve()
+                if job.output_dir
+                else self.project_path.parent / "导出",
                 str(job.snapshot.get("project_id")),
             )
-            retried = self.queue_store.retry(job.job_id)
             self.runner.pump()
             return {"ok": True, "job": self._job_dict(retried)}
         else:
