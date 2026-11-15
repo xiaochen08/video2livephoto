@@ -8,7 +8,7 @@
 
 代码层首轮 P0/P1 已修复并通过针对性回归；本复审未发现新的已确认 P0/P1 功能缺陷。结论为 **CONDITIONAL PASS / 外部交付仍 BLOCKED**。
 
-条件通过只覆盖本次复审实际运行的源码和测试。V1.0 仍不能宣称完整产品验收，因为真实婚礼识别真值、真实复杂素材、Apple timed metadata/iPhone、M1 卷级故障矩阵、NSIS 安装器和与最终 SHA 绑定的候选 ZIP 尚未形成完整证据。
+条件通过只覆盖本次复审实际运行的源码和测试。V1.0 仍不能宣称完整产品验收，因为真实婚礼识别真值、真实复杂素材、Apple timed metadata/iPhone、M1 卷级故障矩阵、目标 Windows 安装/卸载和全流程界面证据尚未形成完整证据。
 
 ## 自动化检查
 
@@ -65,14 +65,14 @@ core/media/normalize.py 使用后台 communicate 持续排水，并在取消/超
 | M4 4K/长短混合真实婚礼、音画同步和画质并排核对 | BLOCKED | 不能把合成编码测试推广到复杂素材 |
 | M5 Apple timed metadata 轨、iPhone 真机和社交平台 | BLOCKED | 本地 UUID/哈希/解码不等于 Live Photo 设备兼容 |
 | M1 负显示 PTS、真实 ENOSPC、ACL、外部强杀矩阵 | BLOCKED | 仍沿用 M1 报告中的诚实限制 |
-| M7 NSIS 安装器、安装/卸载、Windows 11 离线实机 | BLOCKED | 当前交付目录是 win-unpacked/ZIP 候选，未证明 NSIS 安装通过 |
+| M7 NSIS 安装器、安装/卸载、Windows 11 离线实机 | BLOCKED | NSIS 候选已生成并有 SHA，但未在目标 Windows 实机完成安装、卸载和离线启动矩阵 |
 | npm 依赖安全审计 | OPEN | 当前锁定 Electron/electron-builder 依赖存在高危/严重 advisories，需在正式发布前处理或签署风险接受 |
-| 候选 ZIP 与最终 SHA 绑定 | BLOCKED | delivery/v1.0 中 ZIP SHA 为 18A6659471C6EFD9F42C98180400589A36CCD3C670BC1BF1169145EBC9B0E095；ZIP 内 sidecar SHA 为 BFC78B...，当前 runtime/desktop-ipc-server.exe SHA 为 2E8074...，说明 ZIP 是旧构建产物，必须按 589c417 重新打包 |
+| 候选包与最终 SHA 绑定 | PASS（候选产物）/BLOCKED（实机） | 已生成 delivery/v1.0/Video2LivePhoto-1.0.0-final-candidate-win-unpacked.zip，SHA-256 为 B9470022CB68021F6634B63393DCCA75D066B25A06FF533397769B5BF83764CE；NSIS 安装器 delivery/v1.0/nsis-attempt/Video2LivePhoto Setup 1.0.0-candidate.exe，SHA-256 为 AEE9047007C424EEB14238FADECF66248DEDE9ED64642FE3650F93016D4B04E1；sidecar 为 2E8074C661DA460EB4DCF0E492A2FBFC02B1B3DEF5E3F8C7D1EA0AF366929668，FFmpeg/FFprobe 与冻结 SHA 一致。安装/卸载和目标 Windows 实机仍待外部验收 |
 | 实际界面证据 | BLOCKED | 现有证据文件名为 m3-empty-import-screen.png，未覆盖导入、检测、编辑、导出、暂停/恢复全流程截图或录屏 |
 
 ## 外部交付判定
 
-源码与自动化测试：**CONDITIONAL PASS**。
+源码、自动化测试和本地候选产物：**CONDITIONAL PASS**。
 
-产品完整性与候选安装包：**BLOCKED**。必须先重新生成与 589c417 绑定的候选 ZIP/安装包，更新 sidecar/FFmpeg 指纹和许可证清单，并补齐或明确列出上述真实素材、设备和 Windows 安装限制。当前不应把 ZIP 或本地构建成功描述为 V1.0 已发布。
+产品完整性与正式发布：**BLOCKED**。候选 ZIP/NSIS 已按 589c417 重新生成并有指纹，但仍需目标 Windows 实机安装/卸载、离线启动和全流程界面验收；同时保持上述真实素材、设备和 M1 故障矩阵限制。当前不应把候选产物描述为 V1.0 已发布。
 
