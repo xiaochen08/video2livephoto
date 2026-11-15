@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onUnmounted, ref } from "vue";
 
 type Project = {
   project_id: string;
@@ -32,6 +32,7 @@ const selectedClipId = ref("");
 const message = ref("先导入一条本地视频；M3 不会自动导出。\n");
 const busy = ref(false);
 const exportJobs = ref<ExportJob[]>([]);
+let queueTimer: number | undefined;
 
 const selectedCut = computed(() => project.value?.cuts.find((cut) => cut.cut_id === selectedCutId.value));
 const selectedClip = computed(() => project.value?.segments.find((clip) => clip.clip_id === selectedClipId.value));
@@ -130,8 +131,24 @@ async function redo() { await call("redo"); await loadWindow(); }
 
 async function refreshQueue() {
   if (!project.value) return;
+  if (busy.value) return;
   const result = await call("export_status");
   exportJobs.value = result.jobs || [];
+  if (exportJobs.value.length && exportJobs.value.every((job) => ["succeeded", "failed", "skipped", "stale", "interrupted"].includes(job.state))) {
+    stopQueuePolling();
+  }
+}
+
+function stopQueuePolling() {
+  if (queueTimer !== undefined) {
+    window.clearInterval(queueTimer);
+    queueTimer = undefined;
+  }
+}
+
+function startQueuePolling() {
+  stopQueuePolling();
+  queueTimer = window.setInterval(() => { void refreshQueue(); }, 1000);
 }
 
 async function confirmRecovery() {
@@ -160,8 +177,11 @@ async function confirmExport() {
   }
   const result = await call("start_export", { allow_unreviewed: allow });
   exportJobs.value = result.jobs || [];
+  startQueuePolling();
   message.value = `已确认导出并加入本地队列（${result.jobs.length} 个片段）。编码、校验和安全提交已开始，源视频保持只读。\n`;
 }
+
+onUnmounted(stopQueuePolling);
 </script>
 
 <template>

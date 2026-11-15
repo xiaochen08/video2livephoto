@@ -20,7 +20,7 @@
 
 `QueueStore.mark_interrupted_for_restart()` 只把活动任务标为 `interrupted`，不会启动编码。IPC/UI 的 `confirm_recovery(job_ids)` 会先尝试恢复事务日志，再回到 `pending` 并由用户显式确认后领取。成功任务不重跑，失败任务通过 `retry()` 单独重试；`snapshot_hash` 使用 UTF-8、排序键的 canonical JSON SHA-256。`start_export` 按不可变快照哈希幂等，重复点击返回原任务。
 
-当同一批任务全部进入终态后，`export_status` 会在输出根目录原子写入 UTF-8 `导出报告.json`，包含批次标识、任务状态、错误和结果摘要；处理中的批次不会提前发布报告。
+当同一批任务全部进入终态后，`export_status` 会在输出根目录原子写入 UTF-8 `导出报告.json`，包含批次标识、任务状态、错误和结果摘要；处理中的批次不会提前发布报告。renderer 在启动导出后每秒轮询状态，因此正常界面流程会自动触发报告写入；无 UI 调用者需主动调用 `export_status`。
 
 ## SQLite 字段
 
