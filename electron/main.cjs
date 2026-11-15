@@ -97,6 +97,13 @@ app.whenReady().then(() => {
   bridge.start();
   ipcMain.handle("m3:request", (_event, method, params) => bridge.request(method, params));
   ipcMain.handle("m3:pick-file", async (_event, options = {}) => {
+    if (options.mode === "directory") {
+      const result = await dialog.showOpenDialog({
+        title: options.title || "选择文件夹",
+        properties: ["openDirectory", "createDirectory"],
+      });
+      return result.canceled ? null : result.filePaths[0] || null;
+    }
     const mode = options.mode === "save" ? "save" : "open";
     if (mode === "save") {
       const result = await dialog.showSaveDialog({
