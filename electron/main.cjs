@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
+const { existsSync } = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
 
@@ -12,14 +13,25 @@ class PythonBridge {
 
   start() {
     const root = path.resolve(__dirname, "..");
-    const command = process.env.VIDEO2LIVEPHOTO_PYTHON || (process.platform === "win32" ? "C:\\Windows\\py.exe" : "python3");
-    const args = command === "py" || command.toLowerCase().endsWith("py.exe")
-      ? ["-3", "-u", "-m", "desktop.ipc_server"]
-      : ["-u", "-m", "desktop.ipc_server"];
+    const bundled = path.join(process.resourcesPath, "runtime", "desktop-ipc-server.exe");
+    const command = existsSync(bundled)
+      ? bundled
+      : process.env.VIDEO2LIVEPHOTO_PYTHON || (process.platform === "win32" ? "C:\\Windows\\py.exe" : "python3");
+    const args = existsSync(bundled)
+      ? []
+      : command === "py" || command.toLowerCase().endsWith("py.exe")
+        ? ["-3", "-u", "-m", "desktop.ipc_server"]
+        : ["-u", "-m", "desktop.ipc_server"];
     this.process = spawn(command, args, {
       cwd: root,
       windowsHide: true,
-      env: { ...process.env, PYTHONPATH: root },
+      env: {
+        ...process.env,
+        PYTHONPATH: root,
+        VIDEO2LIVEPHOTO_FFMPEG_DIR: existsSync(bundled)
+          ? path.join(process.resourcesPath, "runtime", "ffmpeg")
+          : process.env.VIDEO2LIVEPHOTO_FFMPEG_DIR,
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
     const lines = readline.createInterface({ input: this.process.stdout });

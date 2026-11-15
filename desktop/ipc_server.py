@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
+from core.queue import QueueRunner, QueueStore
+
+from .export_pipeline import export_queue_job
 from .models import M3ProjectError
 from .service import M3ProjectService
 
@@ -19,6 +23,40 @@ class JsonlIpcServer:
 
     def __init__(self) -> None:
         self.service: M3ProjectService | None = None
+        self.project_path: Path | None = None
+        self.queue_store: QueueStore | None = None
+        self.runner: QueueRunner | None = None
+
+    def _close_project(self) -> None:
+        if self.runner is not None:
+            self.runner.close(cancel_running=True)
+            self.runner = None
+        self.queue_store = None
+        if self.service is not None:
+            self.service.close()
+            self.service = None
+
+    def _configure_queue(self, project_path: str | Path) -> None:
+        self.project_path = Path(project_path).resolve()
+        self.queue_store = QueueStore(self.project_path.with_suffix(".queue.sqlite3"))
+        self.queue_store.mark_interrupted_for_restart()
+        assert self.service is not None
+        self.runner = QueueRunner(
+            self.queue_store,
+            lambda job, cancel, report: export_queue_job(
+                job,
+                cancel,
+                report,
+                toolchain=self.service.toolchain,
+            ),
+            max_workers=1,
+        )
+
+    @staticmethod
+    def _job_dict(job) -> dict[str, Any]:
+        payload = dict(job.__dict__)
+        payload["state"] = job.state.value
+        return payload
 
     def run(self) -> int:
         for line in sys.stdin:
@@ -38,8 +76,7 @@ class JsonlIpcServer:
                 }
             sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
             sys.stdout.flush()
-        if self.service is not None:
-            self.service.close()
+        self._close_project()
         return 0
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -50,16 +87,18 @@ class JsonlIpcServer:
         if method == "ping":
             return {"ok": True, "protocol": self.PROTOCOL, "service": "m3-python"}
         if method == "import":
+            self._close_project()
             self.service = M3ProjectService.import_media(
                 params["source_path"],
                 project_path=params["project_path"],
                 cache_root=params.get("cache_root"),
             )
+            self._configure_queue(params["project_path"])
             return {"ok": True, "project": self.service.to_dict()}
         if method == "open":
-            if self.service is not None:
-                self.service.close()
+            self._close_project()
             self.service = M3ProjectService.open_project(params["project_path"])
+            self._configure_queue(params["project_path"])
             return {"ok": True, "project": self.service.to_dict()}
         if self.service is None:
             raise M3ProjectError("PROJECT_NOT_OPEN", "请先导入或打开项目。")
@@ -70,6 +109,14 @@ class JsonlIpcServer:
                 int(params["center_index"]), int(params.get("radius", 3))
             )
             return {"ok": True, "frames": [frame.__dict__ for frame in frames]}
+        if method == "preview_frame":
+            return {
+                "ok": True,
+                "preview": self.service.preview_frame(
+                    int(params["display_index"]),
+                    width=int(params.get("width", 640)),
+                ),
+            }
         if method == "add_cut":
             self.service.add_cut(
                 int(params["boundary_index"]),
@@ -106,6 +153,73 @@ class JsonlIpcServer:
                     allow_unreviewed=bool(params.get("allow_unreviewed", False))
                 ),
             }
+        elif method == "start_export":
+            if (
+                self.queue_store is None
+                or self.runner is None
+                or self.project_path is None
+            ):
+                raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
+            confirmation = self.service.confirm_export(
+                allow_unreviewed=bool(params.get("allow_unreviewed", False))
+            )
+            project = confirmation["project"]
+            output_dir = Path(
+                params.get("output_dir") or self.project_path.parent / "导出"
+            )
+            temp_dir = (
+                self.project_path.parent / f".{self.project_path.stem}.export-tmp"
+            )
+            jobs = []
+            for segment in project["segments"]:
+                if not segment.get("selected_for_export", True):
+                    continue
+                job_snapshot = {
+                    "source_path": project["source_path"],
+                    "frame_index_path": project["frame_index_path"],
+                    "project_id": project["project_id"],
+                    "segment": segment,
+                    "temp_root": str(temp_dir),
+                    "output_dir": str(output_dir),
+                    "color_mode": params.get("color_mode", "warn"),
+                }
+                jobs.append(
+                    self.queue_store.enqueue(
+                        clip_id=str(segment["clip_id"]),
+                        snapshot=job_snapshot,
+                        source_identity=project.get("source_identity"),
+                        temp_dir=str(temp_dir),
+                        output_dir=str(output_dir),
+                    )
+                )
+            self.runner.pump()
+            return {
+                "ok": True,
+                "export": confirmation,
+                "jobs": [self._job_dict(job) for job in jobs],
+            }
+        elif method == "export_status":
+            if self.queue_store is None:
+                raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
+            return {
+                "ok": True,
+                "jobs": [self._job_dict(job) for job in self.queue_store.list()],
+            }
+        elif method == "pause_export":
+            if self.runner is None:
+                raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
+            self.runner.pause()
+            return {"ok": True}
+        elif method == "resume_export":
+            if self.runner is None:
+                raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
+            self.runner.resume()
+            return {"ok": True}
+        elif method == "cancel_export":
+            if self.runner is None:
+                raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
+            self.runner.cancel(str(params["job_id"]))
+            return {"ok": True}
         else:
             raise M3ProjectError("IPC_METHOD_UNKNOWN", f"未知 IPC 方法：{method}")
         return {"ok": True, "project": self.service.to_dict()}

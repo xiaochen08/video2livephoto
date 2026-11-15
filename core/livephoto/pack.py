@@ -5,13 +5,15 @@ import json
 import os
 import shutil
 import subprocess
+import threading
+import time
 import uuid as uuidlib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from core.media.errors import MediaError
-from core.media.process import CancellationToken
+from core.media.process import CancellationToken, kill_process
 from core.media.toolchain import Toolchain, process_creation_flags
 
 
@@ -62,22 +64,77 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _run(args: list[str], timeout_seconds: float = 600.0) -> tuple[int, str, str]:
-    result = subprocess.run(
+def _contains_bytes(
+    path: Path, needle: bytes, *, chunk_size: int = 1024 * 1024
+) -> bool:
+    """Search a large media file without materializing it in Python memory."""
+    overlap = max(0, len(needle) - 1)
+    carry = b""
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                return needle in carry
+            window = carry + chunk
+            if needle in window:
+                return True
+            carry = window[-overlap:] if overlap else b""
+
+
+def _run(
+    args: list[str],
+    timeout_seconds: float = 600.0,
+    token: CancellationToken | None = None,
+) -> tuple[int, str, str]:
+    process = subprocess.Popen(
         args,
         shell=False,
-        check=False,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=timeout_seconds,
         creationflags=process_creation_flags(),
     )
-    return result.returncode, result.stdout, result.stderr
+    result: dict[str, str] = {}
+
+    def communicate() -> None:
+        stdout, stderr = process.communicate()
+        result["stdout"], result["stderr"] = stdout, stderr
+
+    reader = threading.Thread(target=communicate, daemon=True)
+    reader.start()
+    started = time.monotonic()
+    while reader.is_alive():
+        if token is not None and token.cancelled:
+            kill_process(process)
+            reader.join(timeout=2)
+            raise MediaError(
+                code="CANCELLED",
+                stage="livephoto",
+                path=None,
+                stream_index=None,
+                retryable=True,
+                message="Live Photo 封装已取消",
+            )
+        if time.monotonic() - started > timeout_seconds:
+            kill_process(process)
+            reader.join(timeout=2)
+            raise MediaError(
+                code="LIVEPHOTO_TIMEOUT",
+                stage="livephoto",
+                path=None,
+                stream_index=None,
+                retryable=True,
+                message="Live Photo 封装超时",
+            )
+        time.sleep(0.05)
+    return process.returncode or 0, result.get("stdout", ""), result.get("stderr", "")
 
 
-def _ffprobe_json(path: Path, toolchain: Toolchain) -> dict[str, Any]:
+def _ffprobe_json(
+    path: Path, toolchain: Toolchain, token: CancellationToken | None = None
+) -> dict[str, Any]:
     code, stdout, stderr = _run(
         [
             toolchain.ffprobe.path,
@@ -93,7 +150,8 @@ def _ffprobe_json(path: Path, toolchain: Toolchain) -> dict[str, Any]:
             "-show_entries",
             "format=format_name,duration:format_tags:stream=index,codec_type,codec_name,time_base:frame=best_effort_timestamp,pts",
             str(path),
-        ]
+        ],
+        token=token,
     )
     if code != 0:
         raise MediaError(
@@ -162,6 +220,7 @@ def _validate_pair(
     pairing_uuid: str,
     still_image_time_seconds: float,
     toolchain: Toolchain,
+    token: CancellationToken | None = None,
 ) -> dict[str, Any]:
     if not jpg_path.exists() or not mov_path.exists():
         raise MediaError(
@@ -195,7 +254,7 @@ def _validate_pair(
             message="JPG 配对 UUID 不匹配",
             diagnostics={"expected": pairing_uuid, "actual": jpg_id},
         )
-    payload = _ffprobe_json(mov_path, toolchain)
+    payload = _ffprobe_json(mov_path, toolchain, token)
     streams = payload.get("streams") or []
     if not streams:
         raise MediaError(
@@ -210,11 +269,10 @@ def _validate_pair(
     normalized_tags = {str(key).lower(): str(value) for key, value in tags.items()}
     content_id = normalized_tags.get("com.apple.quicktime.content.identifier")
     still_tag = normalized_tags.get("com.apple.quicktime.still-image-time")
-    raw = mov_path.read_bytes()
     # FFmpeg may serialize the key in a binary mdta/ilst record that ffprobe
     # presents differently.  Keep a second byte-level evidence check.
-    raw_has_uuid = pairing_uuid.encode("ascii") in raw
-    raw_has_still_key = b"still-image-time" in raw
+    raw_has_uuid = _contains_bytes(mov_path, pairing_uuid.encode("ascii"))
+    raw_has_still_key = _contains_bytes(mov_path, b"still-image-time")
     if content_id and content_id.upper() != pairing_uuid.upper() and not raw_has_uuid:
         raise MediaError(
             code="LIVEPHOTO_METADATA_MISMATCH",
@@ -345,7 +403,8 @@ def pack_live_photo(
                     "-q:v",
                     "2",
                     str(staged_jpg),
-                ]
+                ],
+                token=token,
             )
             if code != 0:
                 raise MediaError(
@@ -391,7 +450,8 @@ def pack_live_photo(
                 "-metadata",
                 f"com.apple.quicktime.still-image-time={still_value}",
                 str(staged_mov),
-            ]
+            ],
+            token=token,
         )
         if code != 0 or not staged_mov.exists():
             raise MediaError(
@@ -409,6 +469,7 @@ def pack_live_photo(
             pairing,
             still_image_time_seconds,
             toolchain,
+            token,
         )
         manifest = LivePhotoManifest(
             manifest_schema_version=1,

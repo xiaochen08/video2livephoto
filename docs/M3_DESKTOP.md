@@ -26,11 +26,11 @@ Renderer 只发送版本化 IPC 请求，不直接读源视频，也不启动 FF
 - 待检查切点列表；未检查时导出确认会阻止，用户显式确认后只生成 M4 导出快照。
 - Electron renderer 使用真实按钮和 IPC 服务；没有静态演示数据。
 
-## M2/M4 接口状态
+## M2/M4/M5/M6 接口状态
 
-M2 检测服务尚未出现在本分支基线。`M3ProjectService.import_media(detector=...)` 已提供可注入检测契约，结果字段为 `status`、`version` 和 `cuts[]`（`boundary_index`、`kind`、`confidence`、`needs_review`、`reason`）。当前 Electron IPC 不主动伪造检测结果，UI 明确显示“检测服务尚未接通”，并以完整原始帧范围进入人工编辑。
+默认导入路径已调用 M2 `detect_shots()`；结果按候选帧边界持久化为待审核切点。`M3ProjectService.import_media(detector=...)` 仍保留可注入检测契约，便于回归和后续算法替换。
 
-`confirm_export` 返回 `export_confirmation_snapshot`，其中包含项目快照、待检查数量和 `encoder: M4_NOT_CONNECTED`。它不会启动编码、不会创建 MP4/JPG/MOV，也不会覆盖源文件。
+用户确认后 IPC `start_export` 将快照写入 M6 SQLite 队列；队列工作器调用 M4 `encode_segment()`、M5 `pack_live_photo()` 和安全提交事务，输出 MP4/JPG/MOV/manifest。未检查切点仍需显式确认，不能自动导出。
 
 ## 启动与测试
 

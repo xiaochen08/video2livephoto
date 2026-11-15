@@ -27,7 +27,8 @@ def test_import_uses_real_m1_probe_and_frame_index_and_reopens(
     service = _service(small_mp4, ffmpeg_path, ffprobe_path, tmp_path)
     try:
         assert service.snapshot.frame_count >= 20
-        assert service.snapshot.detector_status == "not_connected"
+        assert service.snapshot.detector_status == "complete"
+        assert service.snapshot.detector_version == "m2.detection.v1"
         assert service.frame_at(0).display_index == 0
         service.add_cut(5, needs_review=True)
         assert service.snapshot.segments[0].end_index == 5
@@ -42,6 +43,21 @@ def test_import_uses_real_m1_probe_and_frame_index_and_reopens(
             assert db.execute("SELECT COUNT(*) FROM revisions").fetchone()[0] >= 2
     finally:
         reopened.close()
+
+
+def test_import_runs_m2_and_decodes_bounded_preview(
+    small_mp4: Path,
+    ffmpeg_path: str,
+    ffprobe_path: str,
+    tmp_path: Path,
+) -> None:
+    service = _service(small_mp4, ffmpeg_path, ffprobe_path, tmp_path)
+    try:
+        preview = service.preview_frame(0, width=320)
+        assert preview["mime"] == "image/jpeg"
+        assert preview["data_uri"].startswith("data:image/jpeg;base64,")
+    finally:
+        service.close()
 
 
 def test_timeline_editing_undo_redo_and_contiguous_ranges(
@@ -76,7 +92,7 @@ def test_unreviewed_cut_requires_explicit_export_confirmation(
             service.confirm_export()
         assert exc.value.code == "PENDING_REVIEW"
         export = service.confirm_export(allow_unreviewed=True)
-        assert export["encoder"] == "M4_NOT_CONNECTED"
+        assert export["encoder"] == "M4_M5_QUEUE_PIPELINE"
         assert export["confirmed_by_user"] is True
     finally:
         service.close()

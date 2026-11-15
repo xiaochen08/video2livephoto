@@ -62,8 +62,18 @@ class Toolchain:
             EXPECTED_FFPROBE_SHA256,
         )
 
-        ffmpeg = shutil.which("ffmpeg")
-        ffprobe = shutil.which("ffprobe")
+        bundled_dir = os.environ.get("VIDEO2LIVEPHOTO_FFMPEG_DIR")
+        if bundled_dir:
+            root = Path(bundled_dir).resolve()
+            ffmpeg = (
+                str(root / "ffmpeg.exe") if (root / "ffmpeg.exe").is_file() else None
+            )
+            ffprobe = (
+                str(root / "ffprobe.exe") if (root / "ffprobe.exe").is_file() else None
+            )
+        else:
+            ffmpeg = shutil.which("ffmpeg")
+            ffprobe = shutil.which("ffprobe")
         if not ffmpeg or not ffprobe:
             raise MediaError(
                 code="TOOLCHAIN_MISSING",

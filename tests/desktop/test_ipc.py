@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from core.media.toolchain import Toolchain
@@ -27,4 +28,41 @@ def test_ipc_protocol_ping_and_real_import(
     assert result["ok"] is True
     assert result["project"]["frame_count"] >= 20
     server.handle({"protocol": "m3.ipc.v1", "method": "state"})
-    server.service.close()
+    server._close_project()
+
+
+def test_ipc_start_export_runs_queue_and_publishes_outputs(
+    small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path, monkeypatch
+) -> None:
+    server = JsonlIpcServer()
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    monkeypatch.setattr("desktop.service.Toolchain.discover", lambda: toolchain)
+    server.handle(
+        {
+            "protocol": "m3.ipc.v1",
+            "method": "import",
+            "params": {
+                "source_path": str(small_mp4),
+                "project_path": str(tmp_path / "ipc-export.sqlite3"),
+                "cache_root": str(tmp_path / "cache"),
+            },
+        }
+    )
+    started = server.handle(
+        {
+            "protocol": "m3.ipc.v1",
+            "method": "start_export",
+            "params": {"allow_unreviewed": True, "output_dir": str(tmp_path / "out")},
+        }
+    )
+    assert started["jobs"]
+    for _ in range(100):
+        status = server.handle({"protocol": "m3.ipc.v1", "method": "export_status"})
+        if all(job["state"] == "succeeded" for job in status["jobs"]):
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError(status)
+    assert list((tmp_path / "out" / "视频片段").glob("*.mp4"))
+    assert list((tmp_path / "out" / "LivePhoto").glob("*.JPG"))
+    server._close_project()

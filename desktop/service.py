@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import base64
 import copy
 import sqlite3
+import subprocess
 import uuid
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
+from core.analysis.shot_detection import detect_shots
 from core.media.frame_index import build_frame_index
 from core.media.probe import probe_media
 from core.media.source_identity import capture_identity, identities_match
-from core.media.toolchain import Toolchain
+from core.media.toolchain import Toolchain, process_creation_flags
 
 from .models import (
     AudioConflictError,
@@ -34,9 +37,16 @@ class M3ProjectService:
     snapshot for M4 and does not touch the source file or start an export.
     """
 
-    def __init__(self, snapshot: ProjectSnapshot, store: ProjectStore):
+    def __init__(
+        self,
+        snapshot: ProjectSnapshot,
+        store: ProjectStore,
+        *,
+        toolchain: Toolchain | None = None,
+    ):
         self.snapshot = snapshot
         self.store = store
+        self.toolchain = toolchain or Toolchain.discover()
         self._undo: list[ProjectSnapshot] = []
         self._redo: list[ProjectSnapshot] = []
 
@@ -73,21 +83,46 @@ class M3ProjectService:
             result = detector(str(source), probe_dict, index.index_path)
             detector_status = str(result.get("status", "connected"))
             detector_version = result.get("version")
-            for item in result.get("cuts", []):
-                boundary = int(item["boundary_index"])
-                if 0 < boundary < index.frame_count:
-                    cuts.append(
-                        CutPoint(
-                            cut_id=str(item.get("cut_id") or uuid.uuid4()),
-                            boundary_index=boundary,
-                            kind=str(item.get("kind", "detected")),
-                            confidence=item.get("confidence"),
-                            needs_review=bool(item.get("needs_review", False)),
-                            checked=bool(item.get("checked", False)),
-                            origin=str(item.get("origin", "detector")),
-                            reason=item.get("reason"),
-                        )
-                    )
+            detected_cuts = result.get("cuts", [])
+        else:
+            detection = detect_shots(
+                source,
+                frame_index_report=index,
+                toolchain=selected_toolchain,
+            )
+            detector_status = detection.status
+            detector_version = detection.schema_version
+            detected_cuts = [
+                {
+                    "cut_id": candidate.candidate_id,
+                    "boundary_index": candidate.frame_index,
+                    "kind": candidate.kind,
+                    "confidence": candidate.confidence,
+                    "needs_review": candidate.review_required,
+                    "checked": not candidate.review_required,
+                    "origin": "detector",
+                    "reason": candidate.reason,
+                }
+                for candidate in detection.candidates
+            ]
+        seen_boundaries: set[int] = set()
+        for item in detected_cuts:
+            boundary = int(item["boundary_index"])
+            if not 0 < boundary < index.frame_count or boundary in seen_boundaries:
+                continue
+            seen_boundaries.add(boundary)
+            cuts.append(
+                CutPoint(
+                    cut_id=str(item.get("cut_id") or uuid.uuid4()),
+                    boundary_index=boundary,
+                    kind=str(item.get("kind", "detected")),
+                    confidence=item.get("confidence"),
+                    needs_review=bool(item.get("needs_review", False)),
+                    checked=bool(item.get("checked", False)),
+                    origin=str(item.get("origin", "detector")),
+                    reason=item.get("reason"),
+                )
+            )
         cuts.sort(key=lambda item: item.boundary_index)
         snapshot = ProjectSnapshot(
             project_id=str(uuid.uuid4()),
@@ -104,7 +139,7 @@ class M3ProjectService:
         )
         store = ProjectStore.create(project)
         store.save(snapshot)
-        return cls(snapshot, store)
+        return cls(snapshot, store, toolchain=selected_toolchain)
 
     @classmethod
     def open_project(
@@ -167,6 +202,64 @@ class M3ProjectService:
         start = max(0, center_index - max(0, radius))
         end = min(self.snapshot.frame_count, center_index + max(0, radius) + 1)
         return [self.frame_at(index) for index in range(start, end)]
+
+    def preview_frame(self, display_index: int, *, width: int = 640) -> dict[str, Any]:
+        """Decode one bounded preview JPEG without loading the source into Python."""
+        frame = self.frame_at(display_index)
+        timestamp = (
+            frame.best_effort_pts if frame.best_effort_pts is not None else frame.pts
+        )
+        if timestamp is None:
+            raise M3ProjectError(
+                "FRAME_TIMESTAMP_UNAVAILABLE", "当前帧缺少可用时间戳。"
+            )
+        seconds = timestamp * frame.time_base_num / frame.time_base_den
+        width = max(160, min(int(width), 1280))
+        result = subprocess.run(
+            [
+                self.toolchain.ffmpeg.path,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{seconds:.12f}",
+                "-i",
+                self.snapshot.source_path,
+                "-frames:v",
+                "1",
+                "-vf",
+                f"scale={width}:-2",
+                "-q:v",
+                "3",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "mjpeg",
+                "pipe:1",
+            ],
+            shell=False,
+            check=False,
+            capture_output=True,
+            timeout=30,
+            creationflags=process_creation_flags(),
+        )
+        if result.returncode != 0 or not result.stdout:
+            raise M3ProjectError(
+                "PREVIEW_DECODE_FAILED",
+                "当前帧预览解码失败。",
+                details={
+                    "stderr": result.stderr.decode("utf-8", errors="replace")[-1000:]
+                },
+            )
+        if len(result.stdout) > 8 * 1024 * 1024:
+            raise M3ProjectError("PREVIEW_TOO_LARGE", "预览帧超过内存上限。")
+        return {
+            "display_index": display_index,
+            "pts": timestamp,
+            "mime": "image/jpeg",
+            "data_uri": "data:image/jpeg;base64,"
+            + base64.b64encode(result.stdout).decode("ascii"),
+        }
 
     def pending_reviews(self) -> list[CutPoint]:
         return [
@@ -359,7 +452,7 @@ class M3ProjectService:
             "project": copy.deepcopy(self.snapshot.to_dict()),
             "pending_review_count": len(pending),
             "confirmed_by_user": True,
-            "encoder": "M4_NOT_CONNECTED",
+            "encoder": "M4_M5_QUEUE_PIPELINE",
         }
 
     def undo(self) -> ProjectSnapshot:

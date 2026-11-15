@@ -23,3 +23,5 @@ desktop.ini
 # Electron/Vite local dependencies and diagnostic logs
 node_modules/
 m3-electron-*.log
+runtime/
+delivery/

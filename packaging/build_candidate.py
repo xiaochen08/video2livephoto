@@ -33,6 +33,8 @@ class EnvironmentReport:
     npm: str | None
     electron_project: str | None
     electron_builder: str | None
+    bundled_python: str | None
+    bundled_ffmpeg: str | None
     missing: tuple[str, ...]
 
 
@@ -86,6 +88,10 @@ def inspect_environment(project: str | os.PathLike[str]) -> EnvironmentReport:
                 )
         except (OSError, ValueError):
             pass
+    runtime = root / "runtime"
+    bundled_python = runtime / "desktop-ipc-server.exe"
+    bundled_ffmpeg = runtime / "ffmpeg" / "ffmpeg.exe"
+    bundled_ffprobe = runtime / "ffmpeg" / "ffprobe.exe"
     missing: list[str] = []
     if not package.is_file():
         missing.append("package.json")
@@ -95,12 +101,18 @@ def inspect_environment(project: str | os.PathLike[str]) -> EnvironmentReport:
         missing.append("npm")
     if builder is None:
         missing.append("electron-builder")
+    if not bundled_python.is_file():
+        missing.append("runtime/desktop-ipc-server.exe")
+    if not bundled_ffmpeg.is_file() or not bundled_ffprobe.is_file():
+        missing.append("runtime/ffmpeg/ffmpeg.exe+ffprobe.exe")
     return EnvironmentReport(
         python=sys.version.split()[0],
         node=_version(node) if node else None,
         npm=_version(npm) if npm else None,
         electron_project=str(root) if package.is_file() else None,
         electron_builder=builder,
+        bundled_python=str(bundled_python) if bundled_python.is_file() else None,
+        bundled_ffmpeg=str(bundled_ffmpeg) if bundled_ffmpeg.is_file() else None,
         missing=tuple(missing),
     )
 
@@ -162,21 +174,21 @@ def build_candidate(
     root = _project_dir(project)
     destination = Path(output).resolve()
     environment = inspect_environment(root)
-    if (
-        "package.json" in environment.missing
-        or "node" in environment.missing
-        or "npm" in environment.missing
-    ):
-        raise PackagingBlocked("Electron 项目或 Node/npm 缺失，拒绝伪造安装包")
+    if environment.missing:
+        raise PackagingBlocked("候选打包依赖缺失: " + ", ".join(environment.missing))
     package = root / "package.json"
     if install_deps:
         lock = root / "package-lock.json"
-        command = ["npm", "ci"] if lock.is_file() else ["npm", "install"]
+        npm_executable = shutil.which("npm.cmd") or shutil.which("npm") or "npm.cmd"
+        command = (
+            [npm_executable, "ci"] if lock.is_file() else [npm_executable, "install"]
+        )
         result = subprocess.run(command, cwd=root, shell=False, check=False)
         if result.returncode:
             raise PackagingBlocked(f"依赖安装失败，返回码 {result.returncode}")
         environment = inspect_environment(root)
     builder = root / "node_modules" / ".bin" / "electron-builder.cmd"
+    npm_executable = shutil.which("npm.cmd") or shutil.which("npm")
     if not builder.exists():
         # `npm exec` is only attempted when electron-builder is declared, so an
         # offline machine reports a concrete missing dependency instead of
@@ -187,7 +199,7 @@ def build_candidate(
         if "electron-builder" not in deps:
             raise PackagingBlocked("package.json 未声明 electron-builder")
         command = [
-            "npm",
+            npm_executable or "npm.cmd",
             "exec",
             "--offline",
             "--",
@@ -198,7 +210,11 @@ def build_candidate(
         ]
     else:
         command = [
-            str(builder),
+            npm_executable or "npm.cmd",
+            "exec",
+            "--offline",
+            "--",
+            "electron-builder",
             "--win",
             "nsis",
             "--config.directories.output=" + str(destination),

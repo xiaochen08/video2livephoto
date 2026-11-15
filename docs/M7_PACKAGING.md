@@ -24,8 +24,18 @@ py -3 -m packaging.build_candidate build --project <electron-project> --output <
 Python 3.12.10
 Node v24.22.1
 npm 11.19.1
-PyInstaller 未安装（不作为 V1.0 路径）
-当前 D worktree 没有 package.json，Electron candidate BLOCKED
+PyInstaller 6.11.1 已用于生成 bundled `runtime/desktop-ipc-server.exe`
+Electron 31.7.7 使用本地 `electronDist`，无需重新下载 Electron 压缩包
+FFmpeg/FFprobe 使用冻结构建，复制到 `runtime/ffmpeg/`
 ```
 
-因此本分支不输出 `.exe`。待主控集成 B 的 Electron 项目后，重新执行 inspect，再在隔离 delivery 目录构建并记录包 SHA-256、安装/卸载、中文路径、离线启动和无外部 Python 验证结果。未经过这些步骤不得标记 M7 PASS。
+已生成并验证 Windows `win-unpacked` 候选目录，包含 Electron、Python sidecar 和 FFmpeg/FFprobe；sidecar JSONL `ping` 返回 `m3-python`。
+
+- 候选目录：`delivery/v1.0/win-unpacked/`
+- 离线候选 ZIP：`delivery/v1.0/Video2LivePhoto-1.0.0-candidate-win-unpacked.zip`
+- ZIP SHA-256：`18A6659471C6EFD9F42C98180400589A36CCD3C670BC1BF1169145EBC9B0E095`
+- Python sidecar SHA-256：`BFC78B484358D79288D809063AB8C1B233D200FE9F4FF563B4ADBE688FEF4CA3`
+- FFmpeg SHA-256：`6632B01B7981092AF425787CD16DDF6449E7BD634AE756398BF4189DB8C42482`
+- FFprobe SHA-256：`C2AD6060AE546E850E436A79786FDC68C8ACC623C283D38E225B0E13163B6446`
+
+NSIS 安装器仍为 BLOCKED：electron-builder 在生成 `.exe` 安装器时需要从 GitHub 下载 `nsis-resources`，当前网络无法连接该地址。不能把 `win-unpacked` 或 ZIP 标记为 NSIS 安装器通过；安装/卸载、无外部 Python 和离线启动需在取得 NSIS 资源后复测。

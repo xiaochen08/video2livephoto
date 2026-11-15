@@ -17,6 +17,7 @@ const projectPath = ref("");
 const project = ref<Project | null>(null);
 const center = ref(0);
 const frames = ref<any[]>([]);
+const previewData = ref("");
 const selectedCutId = ref("");
 const selectedClipId = ref("");
 const message = ref("先导入一条本地视频；M3 不会自动导出。\n");
@@ -43,6 +44,8 @@ async function loadWindow() {
   if (!project.value) return;
   const result = await call("frame_window", { center_index: center.value, radius: 4 });
   frames.value = result.frames;
+  const preview = await call("preview_frame", { display_index: center.value, width: 720 });
+  previewData.value = preview.preview.data_uri;
 }
 
 async function importProject() {
@@ -116,11 +119,11 @@ async function redo() { await call("redo"); await loadWindow(); }
 async function confirmExport() {
   let allow = false;
   if (project.value?.pending_review_count) {
-    allow = window.confirm(`仍有 ${project.value.pending_review_count} 个切点待检查。确认后仅生成 M4 导出快照，不会开始编码？`);
+    allow = window.confirm(`仍有 ${project.value.pending_review_count} 个切点待检查。确认后将开始本地导出队列，是否继续？`);
     if (!allow) return;
   }
-  const result = await call("confirm_export", { allow_unreviewed: allow });
-  message.value = `已生成用户确认的导出快照（${result.export.encoder}）。M4 尚未接通，当前不会写入 MP4/JPG/MOV。\n`;
+  const result = await call("start_export", { allow_unreviewed: allow });
+  message.value = `已确认导出并加入本地队列（${result.jobs.length} 个片段）。编码、校验和安全提交已开始，源视频保持只读。\n`;
 }
 </script>
 
@@ -151,6 +154,7 @@ async function confirmExport() {
       <section class="canvas">
         <div class="preview-card">
           <div class="preview-head"><span>逐帧预览窗口</span><span>当前帧 {{ center }} / {{ Math.max(0, project.frame_count - 1) }}</span></div>
+          <div class="preview-image-wrap"><img v-if="previewData" class="preview-image" :src="previewData" alt="当前显示帧预览" /><span v-else class="muted">正在加载预览帧…</span></div>
           <div class="frame-strip"><button v-for="frame in frames" :key="frame.display_index" :class="{ active: frame.display_index === center }" @click="center = frame.display_index; loadWindow()">{{ frame.display_index }}<small>{{ frame.pict_type || "?" }}</small></button></div>
           <input class="scrub" type="range" :min="0" :max="Math.max(0, project.frame_count - 1)" v-model.number="center" @change="loadWindow" />
           <p class="muted">M1 PTS：{{ frames.find((frame) => frame.display_index === center)?.best_effort_pts ?? "—" }} · 时间基：{{ frames.find((frame) => frame.display_index === center)?.time_base_num ?? "—" }}/{{ frames.find((frame) => frame.display_index === center)?.time_base_den ?? "—" }}</p>
@@ -158,7 +162,7 @@ async function confirmExport() {
         <div class="toolbar"><button @click="addCut">在当前帧增加切点</button><button :disabled="!selectedCut" @click="moveCut(-1)">切点 ←</button><button :disabled="!selectedCut" @click="moveCut(1)">切点 →</button><button :disabled="!selectedCut" @click="deleteCut">删除切点</button><button :disabled="!selectedClip" @click="mergeSelected">合并相邻片段</button><button @click="undo">撤销</button><button @click="redo">重做</button></div>
         <div class="timeline"><div v-for="segment in project.segments" :key="segment.clip_id" class="segment" :class="{ selected: segment.clip_id === selectedClipId }" @click="selectedClipId = segment.clip_id"><span>片段 {{ segment.output_number }}</span><strong>{{ segment.start_index }}–{{ segment.end_index }}</strong><small>{{ segment.end_index - segment.start_index }} 帧 · {{ segment.audio_enabled ? "保留音频" : "静音" }}</small></div></div>
       </section>
-      <aside class="inspector"><div class="rail-title">片段设置</div><template v-if="selectedClip"><p><b>clip_id</b><br /><code>{{ selectedClip.clip_id }}</code></p><p><b>范围</b> {{ selectedClip.start_index }}–{{ selectedClip.end_index }}</p><button @click="toggleClipAudio">{{ selectedClip.audio_enabled ? "设为静音" : "恢复音频" }}</button><button class="secondary" @click="muteAll">全部静音</button></template><p v-else class="muted">点击时间线片段查看设置。</p><hr /><button class="primary" @click="confirmExport">确认并生成导出快照</button><p class="muted">确认后才允许进入 M4；此按钮不会执行编码。</p></aside>
+      <aside class="inspector"><div class="rail-title">片段设置</div><template v-if="selectedClip"><p><b>clip_id</b><br /><code>{{ selectedClip.clip_id }}</code></p><p><b>范围</b> {{ selectedClip.start_index }}–{{ selectedClip.end_index }}</p><button @click="toggleClipAudio">{{ selectedClip.audio_enabled ? "设为静音" : "恢复音频" }}</button><button class="secondary" @click="muteAll">全部静音</button></template><p v-else class="muted">点击时间线片段查看设置。</p><hr /><button class="primary" @click="confirmExport">确认并开始导出</button><p class="muted">确认后进入本地队列；失败、暂停和恢复由任务状态控制。</p></aside>
     </section>
     <pre class="log">{{ message }}</pre>
   </main>
