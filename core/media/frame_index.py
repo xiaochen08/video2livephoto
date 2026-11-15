@@ -44,11 +44,12 @@ def _frame_fields(line: str) -> dict[str, str]:
 
 
 def _make_frame(fields: dict[str, str], index: int, time_base: Rational) -> FrameRef:
+    stream_index = _int(fields.get("stream_index"))
     best_effort = _int(fields.get("best_effort_timestamp"))
     pts = _int(fields.get("pts"))
     duration = _int(fields.get("duration")) or _int(fields.get("pkt_duration"))
     return FrameRef(
-        stream_index=_int(fields.get("stream_index")) or -1,
+        stream_index=stream_index if stream_index is not None else -1,
         display_index=index,
         pts=pts,
         best_effort_pts=best_effort,
