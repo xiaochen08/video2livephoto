@@ -328,6 +328,17 @@ class JsonlIpcServer:
                 raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
             self.runner.cancel(str(params["job_id"]))
             return {"ok": True}
+        elif method == "retry_export":
+            if self.queue_store is None or self.runner is None:
+                raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
+            job = self.queue_store.get(str(params["job_id"]))
+            if job.state != QueueState.FAILED:
+                raise M3ProjectError(
+                    "RETRY_NOT_AVAILABLE", "只有失败任务可以从界面重试；中断任务请先确认恢复。"
+                )
+            retried = self.queue_store.retry(job.job_id)
+            self.runner.pump()
+            return {"ok": True, "job": self._job_dict(retried)}
         else:
             raise M3ProjectError("IPC_METHOD_UNKNOWN", f"未知 IPC 方法：{method}")
         return {"ok": True, "project": self.service.to_dict()}

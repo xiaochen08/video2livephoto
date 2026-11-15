@@ -116,3 +116,38 @@ def test_ipc_recovery_requires_explicit_confirmation(
     assert confirmed["jobs"][0]["state"] == "pending"
     assert confirmed["jobs"][0]["user_confirmation_required"] is False
     server._close_project()
+
+
+def test_ipc_failed_export_can_be_retried_explicitly(
+    small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path, monkeypatch
+) -> None:
+    server = JsonlIpcServer()
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    monkeypatch.setattr("desktop.service.Toolchain.discover", lambda: toolchain)
+    server.handle(
+        {
+            "protocol": "m3.ipc.v1",
+            "method": "import",
+            "params": {
+                "source_path": str(small_mp4),
+                "project_path": str(tmp_path / "ipc-retry.sqlite3"),
+                "cache_root": str(tmp_path / "cache"),
+            },
+        }
+    )
+    assert server.runner is not None and server.queue_store is not None
+    server.runner.pause()
+    job = server.queue_store.enqueue(
+        clip_id="retry-clip", snapshot={"version": 1}, retry_limit=1
+    )
+    server.queue_store.claim(worker_pid=1)
+    server.queue_store.transition(job.job_id, "failed", error_code="TEST_FAILURE")
+    retried = server.handle(
+        {
+            "protocol": "m3.ipc.v1",
+            "method": "retry_export",
+            "params": {"job_id": job.job_id},
+        }
+    )
+    assert retried["job"]["state"] == "pending"
+    server._close_project()

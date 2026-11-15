@@ -168,6 +168,12 @@ async function cancelExport(job: ExportJob) {
   await call("cancel_export", { job_id: job.job_id });
   await refreshQueue();
 }
+async function retryExport(job: ExportJob) {
+  if (!window.confirm(`确认重试任务 ${job.clip_id}？`)) return;
+  await call("retry_export", { job_id: job.job_id });
+  startQueuePolling();
+  await refreshQueue();
+}
 
 async function confirmExport() {
   let allow = false;
@@ -222,7 +228,7 @@ onUnmounted(stopQueuePolling);
         <div class="toolbar"><button @click="addCut">在当前帧增加切点</button><button :disabled="!selectedCut" @click="moveCut(-1)">切点 ←</button><button :disabled="!selectedCut" @click="moveCut(1)">切点 →</button><button :disabled="!selectedCut" @click="deleteCut">删除切点</button><button :disabled="!selectedClip" @click="mergeSelected">合并相邻片段</button><button @click="undo">撤销</button><button @click="redo">重做</button></div>
         <div class="timeline"><div v-for="segment in project.segments" :key="segment.clip_id" class="segment" :class="{ selected: segment.clip_id === selectedClipId }" @click="selectedClipId = segment.clip_id"><span>片段 {{ segment.output_number }}</span><strong>{{ segment.start_index }}–{{ segment.end_index }}</strong><small>{{ segment.end_index - segment.start_index }} 帧 · {{ segment.audio_enabled ? "保留音频" : "静音" }}</small></div></div>
       </section>
-      <aside class="inspector"><div class="rail-title">片段设置</div><template v-if="selectedClip"><p><b>clip_id</b><br /><code>{{ selectedClip.clip_id }}</code></p><p><b>范围</b> {{ selectedClip.start_index }}–{{ selectedClip.end_index }}</p><button @click="toggleClipAudio">{{ selectedClip.audio_enabled ? "设为静音" : "恢复音频" }}</button><button class="secondary" @click="muteAll">全部静音</button></template><p v-else class="muted">点击时间线片段查看设置。</p><hr /><button class="primary" @click="confirmExport">确认并开始导出</button><p class="muted">确认后进入本地队列；失败、暂停和恢复由任务状态控制。</p><section class="queue-panel"><div class="rail-title">导出队列</div><button class="secondary" @click="refreshQueue">刷新状态</button><button v-if="exportJobs.some((job) => job.user_confirmation_required)" class="primary" @click="confirmRecovery">确认恢复未完成任务</button><div class="queue-actions"><button @click="pauseExport">暂停领取</button><button @click="resumeExport">继续领取</button></div><div v-for="job in exportJobs" :key="job.job_id" class="queue-job"><strong>{{ job.clip_id }}</strong><span>{{ job.state }} · {{ Math.round(job.progress * 100) }}%</span><small v-if="job.phase">{{ job.phase }}</small><button v-if="['pending','processing','validating','committing'].includes(job.state)" class="secondary" @click="cancelExport(job)">取消</button><p v-if="job.error_message" class="muted">{{ job.error_message }}</p></div><p v-if="!exportJobs.length" class="muted">尚未建立导出任务。</p></section></aside>
+      <aside class="inspector"><div class="rail-title">片段设置</div><template v-if="selectedClip"><p><b>clip_id</b><br /><code>{{ selectedClip.clip_id }}</code></p><p><b>范围</b> {{ selectedClip.start_index }}–{{ selectedClip.end_index }}</p><button @click="toggleClipAudio">{{ selectedClip.audio_enabled ? "设为静音" : "恢复音频" }}</button><button class="secondary" @click="muteAll">全部静音</button></template><p v-else class="muted">点击时间线片段查看设置。</p><hr /><button class="primary" @click="confirmExport">确认并开始导出</button><p class="muted">确认后进入本地队列；失败、暂停和恢复由任务状态控制。</p><section class="queue-panel"><div class="rail-title">导出队列</div><button class="secondary" @click="refreshQueue">刷新状态</button><button v-if="exportJobs.some((job) => job.user_confirmation_required)" class="primary" @click="confirmRecovery">确认恢复未完成任务</button><div class="queue-actions"><button @click="pauseExport">暂停领取</button><button @click="resumeExport">继续领取</button></div><div v-for="job in exportJobs" :key="job.job_id" class="queue-job"><strong>{{ job.clip_id }}</strong><span>{{ job.state }} · {{ Math.round(job.progress * 100) }}%</span><small v-if="job.phase">{{ job.phase }}</small><button v-if="['pending','processing','validating','committing'].includes(job.state)" class="secondary" @click="cancelExport(job)">取消</button><button v-if="job.state === 'failed'" class="secondary" @click="retryExport(job)">重试</button><p v-if="job.error_message" class="muted">{{ job.error_message }}</p></div><p v-if="!exportJobs.length" class="muted">尚未建立导出任务。</p></section></aside>
     </section>
     <pre class="log">{{ message }}</pre>
   </main>
