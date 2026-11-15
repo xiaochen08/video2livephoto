@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
@@ -190,6 +191,7 @@ def _extract_features(
     config: DetectionConfig,
     token: CancellationToken,
     timeout_seconds: float,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[_Feature]:
     size = config.feature_size
     if size < 4 or size > 64:
@@ -233,6 +235,10 @@ def _extract_features(
     previous: bytes | None = None
     started = time.monotonic()
     stderr_box: dict[str, bytes] = {"value": b""}
+    progress_step = max(1, frame_count // 100)
+
+    if progress_callback is not None:
+        progress_callback(0, frame_count)
 
     def _drain_stderr() -> None:
         if process.stderr is not None:
@@ -301,6 +307,10 @@ def _extract_features(
                 _Feature(mean=mean, sad=sad, blocks=_block_feature(pixels, size))
             )
             previous = pixels
+            if progress_callback is not None and (
+                len(features) == 1 or len(features) % progress_step == 0
+            ):
+                progress_callback(len(features), frame_count)
         return_code = process.wait(timeout=10)
         stderr_reader.join(timeout=1)
         stderr = stderr_box["value"].decode("utf-8", errors="replace")
@@ -327,6 +337,8 @@ def _extract_features(
                     "decoded_count": len(features),
                 },
             )
+        if progress_callback is not None:
+            progress_callback(len(features), frame_count)
         return features
     except MediaError:
         if process.poll() is None:
@@ -567,6 +579,7 @@ def detect_shots(
     config: DetectionConfig | None = None,
     token: CancellationToken | None = None,
     timeout_seconds: float = 3600.0,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> DetectionResult:
     """Analyze display frames without altering source media or filtering short shots."""
 
@@ -593,6 +606,7 @@ def detect_shots(
         config,
         token,
         timeout_seconds,
+        progress_callback,
     )
     after = capture_identity(source)
     if not identities_match(before, after):

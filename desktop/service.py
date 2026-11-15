@@ -65,6 +65,7 @@ class M3ProjectService:
         token: CancellationToken | None = None,
         timeout_seconds: float = 3600.0,
         video_stream_index: int | None = None,
+        progress_callback: Callable[[str, int, int | None], None] | None = None,
     ) -> "M3ProjectService":
         source = Path(source_path).resolve(strict=True)
         project = Path(project_path).resolve()
@@ -79,6 +80,8 @@ class M3ProjectService:
             timeout_seconds=min(timeout_seconds, 120.0),
             selected_video_stream=video_stream_index,
         )
+        if progress_callback is not None:
+            progress_callback("probe", 1, 1)
         index = build_frame_index(
             source,
             cache_root=cache_root,
@@ -86,6 +89,12 @@ class M3ProjectService:
             token=token,
             timeout_seconds=timeout_seconds,
             selected_video_stream=video_stream_index,
+            probe_result=probe,
+            progress_callback=(
+                (lambda done, total: progress_callback("frame_index", done, total))
+                if progress_callback is not None
+                else None
+            ),
         )
         if not index.index_path or index.status != "complete":
             raise M3ProjectError(
@@ -100,6 +109,8 @@ class M3ProjectService:
             detector_status = str(result.get("status", "connected"))
             detector_version = result.get("version")
             detected_cuts = result.get("cuts", [])
+            if progress_callback is not None:
+                progress_callback("shot_detect", 1, 1)
         else:
             detection = detect_shots(
                 source,
@@ -107,6 +118,11 @@ class M3ProjectService:
                 toolchain=selected_toolchain,
                 token=token,
                 timeout_seconds=timeout_seconds,
+                progress_callback=(
+                    (lambda done, total: progress_callback("shot_detect", done, total))
+                    if progress_callback is not None
+                    else None
+                ),
             )
             detector_status = detection.status
             detector_version = detection.schema_version

@@ -557,7 +557,43 @@ class JsonlIpcServer:
         if selected_stream is not None:
             cache_path = Path(str(cache_root))
             cache_root = str(cache_path.with_name(f"{cache_path.name}-stream-{selected_stream}"))
-        self._emit("v2lp:analysis:event", {"analysis_id": analysis_id, "request_id": request_id, "seq": 1, "stages": [{"id": "probe", "status": "running", "progress": None, "note": None}], "shots_found": None, "slow_hint": None})
+        seq = 0
+        current_stage = "probe"
+        stage_state: dict[str, dict[str, Any]] = {
+            "probe": {"id": "probe", "status": "running", "progress": None, "note": None},
+            "frame_index": {"id": "frame_index", "status": "pending", "progress": None, "note": None},
+            "shot_detect": {"id": "shot_detect", "status": "pending", "progress": None, "note": None},
+        }
+
+        def publish(*, shots_found: int | None = None, error: dict[str, Any] | None = None) -> None:
+            nonlocal seq
+            seq += 1
+            payload = {
+                "analysis_id": analysis_id,
+                "request_id": request_id,
+                "seq": seq,
+                "stages": [deepcopy(stage_state[key]) for key in ("probe", "frame_index", "shot_detect")],
+                "shots_found": shots_found,
+                "slow_hint": None,
+            }
+            if error is not None:
+                payload["error"] = error
+            self._emit("v2lp:analysis:event", payload)
+
+        def on_progress(stage: str, done: int, total: int | None) -> None:
+            nonlocal current_stage
+            current_stage = stage
+            state = stage_state[stage]
+            state["status"] = "done" if total is not None and done >= total else "running"
+            state["progress"] = {"done": max(0, int(done)), "total": int(total), "unit": "frames"} if total is not None else None
+            if stage == "frame_index":
+                stage_state["probe"]["status"] = "done"
+            elif stage == "shot_detect":
+                stage_state["probe"]["status"] = "done"
+                stage_state["frame_index"]["status"] = "done"
+            publish()
+
+        publish()
         try:
             service = M3ProjectService.import_media(
                 source_path,
@@ -565,6 +601,7 @@ class JsonlIpcServer:
                 cache_root=cache_root,
                 token=token,
                 video_stream_index=selected_stream,
+                progress_callback=on_progress,
             )
             with self._state_lock:
                 if epoch == self._analysis_epoch:
@@ -576,11 +613,17 @@ class JsonlIpcServer:
                 else:
                     service.close()
             result = {"project_id": service.snapshot.project_id, "warnings": [], "project_path": str(project_path.resolve())}
-            self._emit("v2lp:analysis:event", {"analysis_id": analysis_id, "request_id": request_id, "seq": 2, "stages": [{"id": "probe", "status": "done", "progress": None, "note": None}, {"id": "frame_index", "status": "done", "progress": {"done": service.snapshot.frame_count, "total": service.snapshot.frame_count, "unit": "frames"}, "note": None}, {"id": "shot_detect", "status": "done", "progress": None, "note": None}], "shots_found": len(service.snapshot.cuts), "slow_hint": None})
+            for state in stage_state.values():
+                state["status"] = "done"
+            stage_state["frame_index"]["progress"] = {"done": service.snapshot.frame_count, "total": service.snapshot.frame_count, "unit": "frames"}
+            stage_state["shot_detect"]["progress"] = {"done": service.snapshot.frame_count, "total": service.snapshot.frame_count, "unit": "frames"}
+            publish(shots_found=len(service.snapshot.cuts))
             return result
         except Exception as exc:
             code = getattr(exc, "code", "ANALYSIS_WORKER_EXITED")
-            self._emit("v2lp:analysis:event", {"analysis_id": analysis_id, "request_id": request_id, "seq": 2, "stages": [{"id": "probe", "status": "failed", "progress": None, "note": str(exc)}], "shots_found": None, "slow_hint": None, "error": error_payload(exc)})
+            stage_state[current_stage]["status"] = "failed"
+            stage_state[current_stage]["note"] = str(exc)
+            publish(error=error_payload(exc))
             raise M3ProjectError(code, str(exc), details=getattr(exc, "details", {})) from exc
 
     def _start_analysis(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:

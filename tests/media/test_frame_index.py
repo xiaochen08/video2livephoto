@@ -5,8 +5,10 @@ from pathlib import Path
 
 import pytest
 
+import core.media.frame_index as frame_index_module
 from core.media.errors import MediaError
 from core.media.frame_index import CancellationToken, build_frame_index
+from core.media.probe import probe_media
 from core.media.toolchain import Toolchain
 
 
@@ -18,6 +20,7 @@ def test_frame_index_keeps_b_frame_order_and_integer_pts(
         small_mp4,
         cache_root=tmp_path / "cache",
         toolchain=toolchain,
+        packet_fast_path=False,
     )
     assert report.status == "complete"
     assert report.frame_count >= 20
@@ -30,6 +33,66 @@ def test_frame_index_keeps_b_frame_order_and_integer_pts(
     assert [row[0] for row in rows] == [0, 1, 2, 3, 4]
     assert all(row[1] is not None for row in rows)
     assert any(row[3] == "B" for row in rows)
+
+
+def test_cfr_index_uses_packet_pts_fast_path(
+    small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    report = build_frame_index(
+        small_mp4,
+        cache_root=tmp_path / "cache",
+        toolchain=toolchain,
+        selected_video_stream=0,
+    )
+
+    assert report.resource_stats["index_mode"] == "packet_cfr"
+    assert report.frame_count > 0
+    with sqlite3.connect(report.index_path) as db:
+        rows = db.execute(
+            "SELECT display_index, pts, best_effort_pts, duration FROM frames ORDER BY display_index"
+        ).fetchall()
+    assert [row[0] for row in rows] == list(range(len(rows)))
+    assert [row[1] for row in rows] == [row[2] for row in rows]
+    assert all(row[3] is not None and row[3] > 0 for row in rows[:-1])
+
+
+def test_frame_index_reuses_existing_probe(
+    small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    probe = probe_media(small_mp4, toolchain=toolchain, selected_video_stream=0)
+
+    def unexpected_probe(*_args, **_kwargs):
+        raise AssertionError("frame index should reuse the completed media probe")
+
+    monkeypatch.setattr(frame_index_module, "probe_media", unexpected_probe)
+    report = build_frame_index(
+        small_mp4,
+        cache_root=tmp_path / "cache",
+        toolchain=toolchain,
+        selected_video_stream=0,
+        probe_result=probe,
+    )
+
+    assert report.status == "complete"
+
+
+def test_frame_index_reports_progress(
+    small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    progress: list[tuple[int, int | None]] = []
+    report = build_frame_index(
+        small_mp4,
+        cache_root=tmp_path / "cache",
+        toolchain=toolchain,
+        selected_video_stream=0,
+        progress_callback=lambda done, total: progress.append((done, total)),
+    )
+
+    assert progress
+    assert progress[-1] == (report.frame_count, report.frame_count)
 
 
 def test_vfr_index_preserves_non_uniform_pts(

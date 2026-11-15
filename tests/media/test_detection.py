@@ -110,6 +110,26 @@ def test_detection_result_is_versioned_and_json_serializable(
     assert payload["segments"]
 
 
+def test_detection_reports_frame_progress(
+    hard_cut_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    report = build_frame_index(
+        hard_cut_mp4, cache_root=tmp_path / "cache-progress", toolchain=toolchain
+    )
+    progress: list[tuple[int, int]] = []
+    result = detect_shots(
+        hard_cut_mp4,
+        frame_index_report=report,
+        toolchain=toolchain,
+        progress_callback=lambda done, total: progress.append((done, total)),
+    )
+
+    assert result.status == "complete"
+    assert progress
+    assert progress[-1] == (result.analyzed_frame_count, result.analyzed_frame_count)
+
+
 def test_detection_rejects_audio_only_media(
     tmp_path: Path, ffmpeg_path: str, ffprobe_path: str
 ) -> None:
