@@ -7,6 +7,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from core.logging_system import ContextAdapter, get_logger, log_event
+
 from .store import QueueJob, QueueState, QueueStore
 
 
@@ -39,6 +41,7 @@ class QueueRunner:
         initial_workers: int | None = None,
         on_job_succeeded: Callable[[QueueJob, dict[str, Any] | None], int | None]
         | None = None,
+        logger: ContextAdapter | None = None,
     ):
         if max_workers not in (1, 2):
             raise ValueError("M6 allows one or two concurrent export workers")
@@ -51,6 +54,7 @@ class QueueRunner:
         self.max_workers = max_workers
         self._worker_limit = initial_workers
         self._on_job_succeeded = on_job_succeeded
+        self.logger = logger or get_logger("queue")
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="v1-export"
         )
@@ -84,10 +88,18 @@ class QueueRunner:
             pass
 
     def _run_one(self, job: QueueJob, cancel: threading.Event) -> dict[str, Any] | None:
+        job_logger = self.logger.bind(job_id=job.job_id, fields={"clip_id": job.clip_id})
+        log_event(job_logger, "queue.job.start")
+        last_phase: str | None = None
+
         def report(progress: float, phase: str | None = None) -> None:
+            nonlocal last_phase
             if cancel.is_set():
                 raise WorkerCancelled("cancelled")
             self._report(job.job_id, progress, phase)
+            if phase != last_phase:
+                last_phase = phase
+                log_event(job_logger, "queue.job.phase", progress=progress, phase=phase)
 
         try:
             result = self.worker(job, cancel, report)
@@ -101,6 +113,7 @@ class QueueRunner:
             )
             return result
         except WorkerCancelled as exc:
+            log_event(job_logger, "queue.job.cancelled", level=30, error_code="CANCELLED", error_message=str(exc))
             self.store.transition(
                 job.job_id,
                 QueueState.INTERRUPTED,
@@ -111,6 +124,15 @@ class QueueRunner:
             )
             return None
         except Exception as exc:  # worker errors are persisted, not lost in a thread
+            job_logger.error(
+                "queue.job.failed",
+                exc_info=True,
+                extra={
+                    "event": "queue.job.failed",
+                    "error_code": getattr(exc, "code", "WORKER_FAILED"),
+                    "fields": {"error_message": str(exc)},
+                },
+            )
             self.store.transition(
                 job.job_id,
                 QueueState.FAILED,
@@ -126,6 +148,11 @@ class QueueRunner:
         try:
             result = future.result()
         except Exception:
+            self.logger.error(
+                "queue.future.failed",
+                exc_info=True,
+                extra={"event": "queue.future.failed", "fields": {"job_id": job.job_id}},
+            )
             return
         succeeded = False
         try:
@@ -140,6 +167,11 @@ class QueueRunner:
         except Exception:
             # A missing/invalid transition must leave a durable failure rather than
             # making a half-committed result look successful.
+            self.logger.error(
+                "queue.state_commit.failed",
+                exc_info=True,
+                extra={"event": "queue.state_commit.failed", "fields": {"job_id": job.job_id}},
+            )
             try:
                 self.store.transition(
                     job.job_id,
@@ -148,13 +180,25 @@ class QueueRunner:
                     error_message="无法提交任务状态",
                 )
             except Exception:
+                self.logger.error(
+                    "queue.state_commit.failure_persist_failed",
+                    exc_info=True,
+                    extra={"event": "queue.state_commit.failure_persist_failed", "fields": {"job_id": job.job_id}},
+                )
                 pass
+        if succeeded:
+            log_event(self.logger.bind(job_id=job.job_id), "queue.job.succeeded")
         if succeeded and self._on_job_succeeded is not None:
             try:
                 new_limit = self._on_job_succeeded(job, result)
                 if new_limit is not None:
                     self.set_worker_limit(new_limit)
             except Exception:
+                self.logger.error(
+                    "queue.capacity_probe.failed",
+                    exc_info=True,
+                    extra={"event": "queue.capacity_probe.failed", "fields": {"job_id": job.job_id}},
+                )
                 # A capacity probe must never turn a completed export into a
                 # failed queue state.
                 pass
@@ -171,16 +215,19 @@ class QueueRunner:
                 cancel = threading.Event()
                 future = self._executor.submit(self._run_one, job, cancel)
                 self._running[job.job_id] = _Running(job, cancel, future)
+                log_event(self.logger.bind(job_id=job.job_id), "queue.job.claimed", worker_limit=self._worker_limit)
                 future.add_done_callback(lambda f, j=job: self._done(j, f))
             return self.running_job_ids
 
     def pause(self) -> None:
         with self._lock:
             self._paused = True
+        log_event(self.logger, "queue.pause")
 
     def resume(self) -> tuple[str, ...]:
         with self._lock:
             self._paused = False
+        log_event(self.logger, "queue.resume")
         return self.pump()
 
     def cancel(self, job_id: str) -> bool:
@@ -188,6 +235,7 @@ class QueueRunner:
             running = self._running.get(job_id)
             if running:
                 running.cancel.set()
+                log_event(self.logger.bind(job_id=job_id), "queue.job.cancel_requested")
                 return True
         job = self.store.get(job_id)
         if job.state == QueueState.PENDING:
@@ -198,6 +246,7 @@ class QueueRunner:
                 error_code="CANCELLED",
                 error_message="用户取消",
             )
+            log_event(self.logger.bind(job_id=job_id), "queue.job.skipped", error_code="CANCELLED")
             return True
         return False
 

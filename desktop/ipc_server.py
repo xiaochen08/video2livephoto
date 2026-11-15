@@ -4,11 +4,18 @@ import json
 import os
 import shutil
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from core.commit.transaction import CommitError, recover_transaction
+from core.logging_system import (
+    ContextAdapter,
+    configure_logging,
+    install_uncaught_exception_logging,
+    log_event,
+)
 from core.queue import QueueRunner, QueueState, QueueStore, compute_snapshot_hash
 
 from .export_pipeline import export_queue_job
@@ -25,13 +32,16 @@ class JsonlIpcServer:
 
     PROTOCOL = "m3.ipc.v1"
 
-    def __init__(self) -> None:
+    def __init__(self, logger: ContextAdapter | None = None) -> None:
         self.service: M3ProjectService | None = None
         self.project_path: Path | None = None
         self.queue_store: QueueStore | None = None
         self.runner: QueueRunner | None = None
+        self.logger = logger
 
     def _close_project(self) -> None:
+        if self.service is not None:
+            log_event(self.logger, "project.close", project_path=str(self.project_path) if self.project_path else None) if self.logger else None
         if self.runner is not None:
             self.runner.close(cancel_running=True)
             self.runner = None
@@ -69,7 +79,10 @@ class JsonlIpcServer:
             max_workers=2,
             initial_workers=1,
             on_job_succeeded=promote_after_success,
+            logger=self.logger,
         )
+        if self.logger:
+            log_event(self.logger, "queue.configure", project_path=str(self.project_path), worker_limit=self.runner.worker_limit)
 
     @staticmethod
     def _job_dict(job) -> dict[str, Any]:
@@ -157,10 +170,27 @@ class JsonlIpcServer:
             if not line.strip():
                 continue
             request: dict[str, Any] = {}
+            started = time.perf_counter()
+            request_id = ""
+            method = ""
+            request_logger = self.logger
             try:
                 request = json.loads(line)
+                request_id = str(request.get("id", ""))
+                method = str(request.get("method", ""))
+                if self.logger:
+                    request_logger = self.logger.bind(request_id=request_id or None, method=method)
+                    log_event(request_logger, "ipc.request.start", params=dict(request.get("params") or {}))
                 response = self.handle(request)
             except Exception as exc:  # keep the worker alive for the next request
+                if request_logger:
+                    log_event(
+                        request_logger,
+                        "ipc.request.error",
+                        level=40,
+                        error_code=getattr(exc, "code", "IPC_ERROR"),
+                        error_message=str(exc),
+                    )
                 response = {
                     "ok": False,
                     "error": {
@@ -173,6 +203,13 @@ class JsonlIpcServer:
                 response["id"] = request["id"]
             sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
             sys.stdout.flush()
+            if request_logger:
+                log_event(
+                    request_logger,
+                    "ipc.request.end",
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                    ok=bool(response.get("ok")),
+                )
         self._close_project()
         return 0
 
@@ -184,6 +221,8 @@ class JsonlIpcServer:
         if method == "ping":
             return {"ok": True, "protocol": self.PROTOCOL, "service": "m3-python"}
         if method == "import":
+            if self.logger:
+                log_event(self.logger.bind(request_id=str(request.get("id", "")), method=method), "project.import.start", source_path=params.get("source_path"), project_path=params.get("project_path"))
             self._close_project()
             self.service = M3ProjectService.import_media(
                 params["source_path"],
@@ -193,6 +232,8 @@ class JsonlIpcServer:
             self._configure_queue(params["project_path"])
             return {"ok": True, "project": self.service.to_dict()}
         if method == "open":
+            if self.logger:
+                log_event(self.logger.bind(request_id=str(request.get("id", "")), method=method), "project.open.start", project_path=params.get("project_path"))
             self._close_project()
             self.service = M3ProjectService.open_project(params["project_path"])
             self._configure_queue(params["project_path"])
@@ -301,6 +342,8 @@ class JsonlIpcServer:
                     )
                 )
             self.runner.pump()
+            if self.logger:
+                log_event(self.logger.bind(request_id=str(request.get("id", "")), method=method), "export.batch.submitted", project_id=project.get("project_id"), output_dir=str(output_dir), job_count=len(jobs), color_mode=params.get("color_mode", "warn"))
             return {
                 "ok": True,
                 "export": confirmation,
@@ -330,6 +373,8 @@ class JsonlIpcServer:
             if self.queue_store is None or self.runner is None:
                 raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
             requested = [str(item) for item in params.get("job_ids", [])]
+            if self.logger:
+                log_event(self.logger.bind(request_id=str(request.get("id", "")), method=method), "queue.recovery.request", job_ids=requested)
             if not requested:
                 requested = [
                     job.job_id
@@ -359,6 +404,8 @@ class JsonlIpcServer:
                         ) from exc
             recovered = self.queue_store.confirm_recovery(requested)
             self.runner.pump()
+            if self.logger:
+                log_event(self.logger.bind(request_id=str(request.get("id", "")), method=method), "queue.recovery.confirmed", job_ids=requested, transaction_states=transaction_states)
             return {
                 "ok": True,
                 "transactions": transaction_states,
@@ -392,7 +439,9 @@ class JsonlIpcServer:
 
 
 def main() -> int:
-    return JsonlIpcServer().run()
+    logger = configure_logging("python-ipc", file_name="python.jsonl")
+    install_uncaught_exception_logging(logger)
+    return JsonlIpcServer(logger=logger).run()
 
 
 if __name__ == "__main__":

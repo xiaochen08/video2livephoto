@@ -1,23 +1,27 @@
 const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 const { existsSync } = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
+const { SystemLogger } = require("./logger.cjs");
 
 class PythonBridge {
-  constructor() {
+  constructor(logger) {
     this.pending = new Map();
     this.sequence = 0;
     this.process = null;
+    this.logger = logger;
   }
 
   start() {
     const root = path.resolve(__dirname, "..");
     const bundled = path.join(process.resourcesPath, "runtime", "desktop-ipc-server.exe");
-    const command = existsSync(bundled)
+    const useBundled = app.isPackaged || process.env.VIDEO2LIVEPHOTO_USE_BUNDLED === "1";
+    const command = useBundled && existsSync(bundled)
       ? bundled
       : process.env.VIDEO2LIVEPHOTO_PYTHON || (process.platform === "win32" ? "C:\\Windows\\py.exe" : "python3");
-    const args = existsSync(bundled)
+    const args = useBundled && existsSync(bundled)
       ? []
       : command === "py" || command.toLowerCase().endsWith("py.exe")
         ? ["-3", "-u", "-m", "desktop.ipc_server"]
@@ -28,12 +32,15 @@ class PythonBridge {
       env: {
         ...process.env,
         PYTHONPATH: root,
+        VIDEO2LIVEPHOTO_LOG_DIR: this.logger?.logDir,
+        VIDEO2LIVEPHOTO_SESSION_ID: this.logger?.sessionId,
         VIDEO2LIVEPHOTO_FFMPEG_DIR: existsSync(bundled)
           ? path.join(process.resourcesPath, "runtime", "ffmpeg")
           : process.env.VIDEO2LIVEPHOTO_FFMPEG_DIR,
       },
       stdio: ["pipe", "pipe", "pipe"],
     });
+    this.logger?.info("python.spawn", { command_path: String(command), bundled_path: bundled, cwd_path: root });
     const lines = readline.createInterface({ input: this.process.stdout });
     lines.on("line", (line) => {
       try {
@@ -43,12 +50,17 @@ class PythonBridge {
           this.pending.delete(response.id);
           pending(response);
         }
-      } catch (_) {
-        // Malformed worker output is reported through timeout/exit below.
+      } catch (error) {
+        this.logger?.error("ipc.response.parse_failed", { line: line.slice(-4000) }, error);
       }
     });
-    this.process.stderr.on("data", (chunk) => process.stderr.write(chunk));
-    this.process.on("exit", () => {
+    this.process.stderr.on("data", (chunk) => {
+      process.stderr.write(chunk);
+      this.logger?.warn("python.stderr", { text: chunk.toString("utf8").slice(-4000) });
+    });
+    this.process.on("error", (error) => this.logger?.error("python.process_error", {}, error));
+    this.process.on("exit", (code, signal) => {
+      this.logger?.warn("python.exit", { code, signal });
       for (const reject of this.pending.values()) reject(new Error("Python service exited"));
       this.pending.clear();
     });
@@ -57,26 +69,45 @@ class PythonBridge {
   request(method, params = {}) {
     if (!this.process || this.process.killed) return Promise.reject(new Error("Python service is not running"));
     const id = String(++this.sequence);
+    const started = Date.now();
+    this.logger?.info("ipc.request.start", { request_id: id, method, params });
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        this.logger?.error("ipc.request.timeout", { request_id: id, method, duration_ms: Date.now() - started });
         reject(new Error(`IPC timeout: ${method}`));
       }, 60000);
       this.pending.set(id, (response) => {
         clearTimeout(timer);
-        if (response.ok) resolve(response);
-        else reject(Object.assign(new Error(response.error?.message || "IPC error"), response.error || {}));
+        if (response.ok) {
+          this.logger?.info("ipc.request.end", { request_id: id, method, ok: true, duration_ms: Date.now() - started });
+          resolve(response);
+        } else {
+          const error = Object.assign(new Error(response.error?.message || "IPC error"), response.error || {});
+          this.logger?.error("ipc.request.end", { request_id: id, method, ok: false, duration_ms: Date.now() - started, error_code: error.code }, error);
+          reject(error);
+        }
       });
-      this.process.stdin.write(`${JSON.stringify({ id, protocol: "m3.ipc.v1", method, params })}\n`);
+      try {
+        this.process.stdin.write(`${JSON.stringify({ id, protocol: "m3.ipc.v1", method, params })}\n`);
+      } catch (error) {
+        this.pending.delete(id);
+        this.logger?.error("ipc.request.write_failed", { request_id: id, method }, error);
+        reject(error);
+      }
     });
   }
 
   stop() {
-    if (this.process && !this.process.killed) this.process.kill();
+    if (this.process && !this.process.killed) {
+      this.logger?.info("python.stop");
+      this.process.kill();
+    }
   }
 }
 
-const bridge = new PythonBridge();
+let appLogger;
+const bridge = new PythonBridge(null);
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -91,9 +122,31 @@ function createWindow() {
     },
   });
   win.loadFile(path.resolve(__dirname, "../dist/renderer/index.html"));
+  win.webContents.on("render-process-gone", (_event, details) => appLogger?.error("renderer.process_gone", details));
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => appLogger?.error("renderer.load_failed", { errorCode, errorDescription, validatedURL }));
+  win.on("closed", () => appLogger?.info("window.closed"));
+  appLogger?.info("window.created", { width: 1380, height: 900 });
+  return win;
 }
 
 app.whenReady().then(() => {
+  const sessionId = crypto.randomUUID();
+  try {
+    appLogger = new SystemLogger({ logDir: app.getPath("logs"), sessionId });
+  } catch (error) {
+    process.stderr.write(`[Video2LivePhoto logging disabled] ${error.message}\n`);
+    appLogger = {
+      logDir: "",
+      sessionId,
+      info: () => {},
+      warn: () => {},
+      error: (_event, _fields, err) => { if (err) process.stderr.write(`${err.stack || err}\n`); },
+    };
+  }
+  bridge.logger = appLogger;
+  appLogger.info("app.ready", { version: app.getVersion(), platform: process.platform, arch: process.arch });
+  process.on("uncaughtException", (error) => appLogger.error("process.uncaught_exception", {}, error));
+  process.on("unhandledRejection", (reason) => appLogger.error("process.unhandled_rejection", { reason: String(reason) }));
   bridge.start();
   ipcMain.handle("m3:request", (_event, method, params) => bridge.request(method, params));
   ipcMain.handle("m3:pick-file", async (_event, options = {}) => {
@@ -127,6 +180,7 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
+  appLogger?.info("app.window_all_closed");
   bridge.stop();
   if (process.platform !== "darwin") app.quit();
 });
