@@ -4,7 +4,7 @@
 - 基线：`a8dbc02bd56e63c0c71e9094858cc0e87611bdd6`
 - 原始 main：`e6231886298e0a4bccf0e6591784a2fdba736db6`
 - 当前开发状态：源码与自动化完成 R 复审，外部交付仍按条件阻塞
-- 当前测试基线：71 passed；Ruff/compileall、Vite、TypeScript、IPC 自测通过
+- 当前测试基线：76 passed；Ruff/compileall、Vite、TypeScript、IPC 自测通过
 - 工作区：`E:\LIVE\_audit\video2livephoto-v1-integration`
 
 ## 会话登记
@@ -30,3 +30,11 @@
 - 集成修复提交：`589c41750f7c3ac3c7216c22dd3632b7638ef318`
 - 修复范围：源文件/输出同物理文件拒绝、事务提交日志预写、多个默认视频流歧义拒绝、精确 PTS 预览、可取消音频包探测、still-image-time 语义校验、队列去重、用户确认恢复 IPC/UI、1→2 资源门控。
 - 首轮独立审查报告：`dde99d5`；最终复审：`c25cc115`，未发现新的已确认 P0/P1。真实婚礼真值、设备兼容、M1 故障矩阵和目标 Windows 安装验收仍保持 BLOCKED。
+
+## 复审后功能提交
+
+- 当前分支 HEAD：`c56ae9ae9b6477763dfa39f66259cea520e7c571`
+- M1 负 PTS/edit list/fMP4 证据：`5e71b2a`；多视频无默认歧义拒绝：`cfa24fb`。
+- M6 导出报告、自动轮询和失败重试：`d89e619`、`bdf32ee`、`0187413`。
+- M5 本地 `mebx` timed metadata 轨和 fMP4 片段回归：`6d7483b`、`014d2a3`。
+- 这些功能提交发生在已生成的候选包之后；按用户本轮要求暂不重新打包，候选包不包含上述后续改动。

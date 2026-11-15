@@ -1,6 +1,6 @@
 # V1.0 最终内部验收矩阵
 
-绑定提交：`589c41750f7c3ac3c7216c22dd3632b7638ef318`（最终报告提交前若文档再更新，以最终提交 SHA 为准）。
+源码当前绑定：`c56ae9ae9b6477763dfa39f66259cea520e7c571`；R 复审报告绑定前一稳定候选 `589c41750f7c3ac3c7216c22dd3632b7638ef318`，复审后功能补强见 `docs/execution/POST_REVIEW_FUNCTIONAL.md`。
 
 | 项目 | 状态 | 证据 |
 |---|---|---|
@@ -11,12 +11,12 @@
 | M5 JPG/MOV 配对和本地校验 | PASS（UUID、MakerNote、哈希、ffprobe、mebx timed metadata、still-image-time）；iPhone 真机 BLOCKED | `docs/M4_M5_MEDIA_EXPORT.md`、`tests/media/test_livephoto.py` |
 | M6 队列/暂停/取消/重试/恢复/安全提交 | PASS（SQLite、快照去重、确认恢复、事务恢复回归）；真实断电、ACL、卷级空间不足 BLOCKED | `docs/M6_QUEUE.md`、`tests/queue/`、`tests/commit/`、`tests/desktop/test_ipc.py` |
 | M7 Windows 候选 | PASS（NSIS、win-unpacked、ZIP、sidecar ping、许可证清单）；未签名、安装卸载需目标机外部验收 | `docs/M7_PACKAGING.md`、`docs/execution/POST_REVIEW_PACKAGING.md` |
-| 独立复审 | CONDITIONAL PASS；源码/自动化通过，外部交付仍 BLOCKED | `docs/execution/INTERNAL_REVIEW_FINAL.md` |
+| 独立复审 | `589c417` 上 CONDITIONAL PASS；复审后功能补强待 R 快速复核，外部交付仍 BLOCKED | `docs/execution/INTERNAL_REVIEW_FINAL.md`、`docs/execution/POST_REVIEW_FUNCTIONAL.md` |
 
 ## 固定执行结果
 
 ```text
-py -3 -m pytest -q                         PASS  71 passed in 15.45s
+py -3 -m pytest -q                         PASS  76 passed in 16.63s
 py -3 -m compileall -q core desktop tests packaging  PASS
 py -3 -m ruff check core desktop tests packaging    PASS
 npm run build                              PASS
