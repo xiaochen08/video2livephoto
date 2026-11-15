@@ -61,7 +61,7 @@ M1 测试使用 FFmpeg/FFprobe `N-120646-g6711c6a89b-20250810`。具体 SHA-256�
 ## 时间轴与 fMP4 对照证据
 
 - `F:\M1_samples\neg_tests\edit_audio_offset.mp4`：音频首包 `pts=dts=-1024`（音频时基 `1/48000`），视频首包 `pts=0,dts=-1024`（视频时基 `1/15360`），显示帧首 6 个 best-effort PTS 为 `0,512,1024,1536,2048,2560`。独立 FFmpeg `showinfo` 逐帧解码输出与 SQLite 索引逐项相同。这说明 DTS 可以为负而显示时间轴仍从 0 开始；不能把负 DTS 当作负显示 PTS。
-- `F:\M1_samples\fmp4_av_1s.mp4`：源视频首帧 PTS `1024`，规范化后首帧 PTS `1014`，恒定偏移 `-10`，两侧均为 30 帧、时基 `1/15360`；音频两侧均 48 包、时基 `1/48000`、PTS 偏移 `0`，前 5 个包均为 `0,3200,4224,5248,6272`。偏移来自封装起始时间戳重写，不是重编码；M1 将其作为显式映射返回，不能直接把规范化 PTS 当作源 PTS。
+- `F:\M1_samples\fmp4_av_1s.mp4`：源视频首帧 PTS `1024`，规范化后首帧 PTS `1014`，恒定偏移 `-10`，两侧均为 30 帧、时基 `1/15360`；音频两侧均 48 包、时基 `1/48000`、PTS 偏移 `0`，前 5 个包均为 `0,3200,4224,5248,6272`。音频相对视频起点的变化为 `+10/15360` 秒（约 `0.651 ms`），已由 `audio_video_sync` 返回。偏移来自封装起始时间戳重写，不是重编码；M1 将其作为显式映射返回，不能直接把规范化 PTS 当作源 PTS。
 - `E:\LIVE\_audit\fixtures\frag_h264_2s.mp4` 的既有证据仍保留：视频恒定偏移 `-1024`。不同 fMP4 样片出现 `-1024` 与 `-10` 是允许的封装起点差异，必须按每个结果的映射消费。
 
 ## 异常恢复与资源保护
@@ -94,7 +94,7 @@ M1 测试使用 FFmpeg/FFprobe `N-120646-g6711c6a89b-20250810`。具体 SHA-256�
 
 - `probe_media()` 返回 `MediaProbeResult`：`selected_video_stream`、`video_stream`、`audio_streams`、`attached_picture_streams`、`color`、`fragment`、`diagnostics` 和 `SourceIdentity`。
 - `build_frame_index()` 返回 `FrameIndexReport`，SQLite `frames` 表提供 `display_index`、`pts`、`best_effort_pts`、`duration`、`dts`、`pict_type` 和 `time_base`；M2 应按显示顺序消费，不按文件偏移猜帧。
-- `normalize_fragmented()` 返回 `NormalizedMediaRef`；`validation.video_timeline` 提供规范化前后首尾 PTS、帧数和时基，`source_to_normalized_pts_offset` 提供恒定视频映射，`audio_timeline` 提供每条音频流包数和 PTS 偏移，`audio_time_bases` 提供音频时基。
+- `normalize_fragmented()` 返回 `NormalizedMediaRef`；`validation.video_timeline` 提供规范化前后首尾 PTS、帧数和时基，`source_to_normalized_pts_offset` 提供恒定视频映射，`audio_timeline` 提供每条音频流包数和 PTS 偏移，`audio_time_bases` 提供音频时基，`audio_video_sync` 提供音频相对视频起点的变化。
 - `MediaError` 统一携带 `code`、`stage`、`retryable` 和脱敏后的诊断字段；M2 不应绕过这些错误直接覆盖源文件。
 
 这些事项不扩展为 M2 功能；它们必须在 M1 验收时继续标为 `UNVERIFIED` 或 `BLOCKED`，不能被测试数量掩盖。

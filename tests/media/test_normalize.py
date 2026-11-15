@@ -61,6 +61,8 @@ def test_normalize_fragmented_media_checks_audio_packet_timeline(
     assert result.validation["audio_time_bases"]["normalized"] == {
         "1": {"num": 1, "den": 48000}
     }
+    sync = result.validation["audio_video_sync"]["1"]
+    assert sync["change_seconds"] == pytest.approx(10 / 15360)
 
 
 def test_normalize_cache_root_file_returns_structured_unavailable_error(

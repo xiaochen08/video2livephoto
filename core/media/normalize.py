@@ -196,6 +196,64 @@ def _time_base_payload(stream) -> dict[str, int] | None:
     return {"num": stream.time_base.num, "den": stream.time_base.den}
 
 
+def _timestamp_seconds(value: int | None, stream) -> float | None:
+    if value is None or stream.time_base is None:
+        return None
+    return value * stream.time_base.num / stream.time_base.den
+
+
+def _first_packet_pts(
+    packets: list[tuple[int | None, int | None, int | None]],
+) -> int | None:
+    return next((packet[0] for packet in packets if packet[0] is not None), None)
+
+
+def _compare_audio_video_sync(
+    source_probe,
+    output_probe,
+    source_index,
+    output_index,
+    source_audio_packets: dict[int, list[tuple[int | None, int | None, int | None]]],
+    output_audio_packets: dict[int, list[tuple[int | None, int | None, int | None]]],
+) -> dict[str, dict[str, float | None]]:
+    source_streams = {stream.index: stream for stream in source_probe.audio_streams}
+    output_streams = {stream.index: stream for stream in output_probe.audio_streams}
+    report: dict[str, dict[str, float | None]] = {}
+    for stream_index in sorted(source_streams.keys() | output_streams.keys()):
+        source_stream = source_streams.get(stream_index)
+        output_stream = output_streams.get(stream_index)
+        source_audio_pts = _first_packet_pts(source_audio_packets.get(stream_index, []))
+        output_audio_pts = _first_packet_pts(output_audio_packets.get(stream_index, []))
+        source_audio_start = _timestamp_seconds(source_audio_pts, source_stream)
+        output_audio_start = _timestamp_seconds(output_audio_pts, output_stream)
+        source_video_start = _timestamp_seconds(
+            source_index.first_pts, source_probe.video_stream
+        )
+        output_video_start = _timestamp_seconds(
+            output_index.first_pts, output_probe.video_stream
+        )
+        source_delta = (
+            source_audio_start - source_video_start
+            if source_audio_start is not None and source_video_start is not None
+            else None
+        )
+        output_delta = (
+            output_audio_start - output_video_start
+            if output_audio_start is not None and output_video_start is not None
+            else None
+        )
+        report[str(stream_index)] = {
+            "source_audio_minus_video_seconds": source_delta,
+            "normalized_audio_minus_video_seconds": output_delta,
+            "change_seconds": (
+                output_delta - source_delta
+                if source_delta is not None and output_delta is not None
+                else None
+            ),
+        }
+    return report
+
+
 def normalize_fragmented(
     path: str | Path,
     *,
@@ -418,6 +476,14 @@ def normalize_fragmented(
                     "source_pts_offsets": sorted(offsets),
                 },
             )
+        audio_video_sync = _compare_audio_video_sync(
+            source_probe,
+            output_probe,
+            source_index,
+            output_index,
+            source_audio_packets,
+            output_audio_packets,
+        )
         final_identity = capture_identity(source, include_full_sha256=True)
         if not identities_match(source_identity, final_identity):
             partial.unlink(missing_ok=True)
@@ -470,6 +536,7 @@ def normalize_fragmented(
                 },
                 "source_to_normalized_pts_offset": timeline_offset,
                 "audio_timeline": audio_timeline,
+                "audio_video_sync": audio_video_sync,
                 "source_sha256": final_identity.full_sha256,
                 "ffmpeg_peak_private_bytes": memory_sampler.stop(),
                 "elapsed_seconds": time.perf_counter() - started,
