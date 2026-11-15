@@ -13,7 +13,7 @@ import UiTextField from '@/components/UiTextField.vue'
 import { CUT_KIND_LABEL } from '@/domain/clipHints'
 import { isAbort, toAppError } from '@/domain/errors'
 import { requestId } from '@/domain/ids'
-import { checkNameBase, checkOutputPath, fileStem } from '@/domain/naming'
+import { checkNameBase, checkOutputPath, fileStem, sanitizeForFileName } from '@/domain/naming'
 import { formatBytes } from '@/domain/time'
 import type { ExportColor, ExportQuality } from '@/domain/types'
 import { colorLimitNote, colorSummary, isHdr } from '@/features/editor/mediaText'
@@ -26,6 +26,7 @@ const s = session.stream
 const caps = computed(() => conn.value?.capabilities)
 
 const form = reactive({ output_dir: '', name_base: '', quality: 'source' as ExportQuality, color: 'sdr_rec709' as ExportColor })
+const folderTimestamp = ref('')
 const ack = reactive({ unreviewed: false, modified: false })
 const preflight = ref<PreflightResult | null>(null)
 const preflightError = ref<string | null>(null)
@@ -63,7 +64,8 @@ const muted = computed(() => clips.value.filter((c) => c.audio === 'muted').leng
 const stems = computed(() => clips.value.map((c) => fileStem(form.name_base || '未命名', c.display_index)))
 const nameIssues = computed(() => checkNameBase(form.name_base))
 const longest = computed(() => stems.value.reduce((a, b) => (b.length > a.length ? b : a), '') + '.mov')
-const pathIssues = computed(() => checkOutputPath(form.output_dir, longest.value))
+const batchFolder = computed(() => `livephotos ${sanitizeForFileName(p.value?.name || '项目')} ${folderTimestamp.value || '时间戳'}`)
+const pathIssues = computed(() => checkOutputPath(form.output_dir, longest.value, batchFolder.value))
 const localErrors = computed(() => [...nameIssues.value, ...pathIssues.value].filter((i) => i.level === 'error'))
 const backendErrors = computed(() => preflight.value?.issues.filter((i) => i.level === 'error') ?? [])
 const needsModifiedAck = computed(() => (preflight.value?.existing_outputs.externally_modified ?? 0) > 0)
@@ -83,6 +85,8 @@ const blockReason = computed(() => {
 
 watch(open, (v) => {
   if (!v || !p.value) return
+  const now = new Date()
+  folderTimestamp.value = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('') + '_' + [String(now.getHours()).padStart(2, '0'), String(now.getMinutes()).padStart(2, '0'), String(now.getSeconds()).padStart(2, '0')].join('')
   const es = p.value.export_settings
   Object.assign(form, { output_dir: es.output_dir, name_base: es.name_base, quality: es.quality, color: es.color })
   ack.unreviewed = false
@@ -190,15 +194,16 @@ function backToReview() {
         </div>
         <div class="tree small mono" aria-label="文件组织预览">
           <div class="tree__row"><Folder :size="13" /> {{ form.output_dir || '（未选择）' }}</div>
-          <div class="tree__row tree__l1"><Folder :size="13" /> LivePhoto\</div>
-          <div v-for="st in stems.slice(0, 2)" :key="'lp' + st" class="tree__row tree__l2">{{ st }}.jpg <span class="muted">+</span> {{ st }}.mov</div>
-          <div v-if="stems.length > 3" class="tree__row tree__l2 muted">… 共 {{ stems.length }} 对</div>
-          <div v-if="stems.length > 2" class="tree__row tree__l2">{{ stems[stems.length - 1] }}.jpg <span class="muted">+</span> {{ stems[stems.length - 1] }}.mov</div>
-          <div class="tree__row tree__l1"><Folder :size="13" /> 视频片段\</div>
-          <div v-for="st in stems.slice(0, 2)" :key="'mp' + st" class="tree__row tree__l2">{{ st }}.mp4</div>
-          <div v-if="stems.length > 2" class="tree__row tree__l2 muted">… 共 {{ stems.length }} 个</div>
-          <div class="tree__row tree__l1"><FileText :size="13" /> 导出报告_v{{ p.edit_version }}.html</div>
-          <div class="tree__row tree__l1"><FileJson :size="13" /> manifest_v{{ p.edit_version }}.json</div>
+          <div class="tree__row tree__l1"><Folder :size="13" /> {{ batchFolder }}\</div>
+          <div class="tree__row tree__l2"><Folder :size="13" /> LivePhoto\</div>
+          <div v-for="st in stems.slice(0, 2)" :key="'lp' + st" class="tree__row tree__l3">{{ st }}.jpg <span class="muted">+</span> {{ st }}.mov</div>
+          <div v-if="stems.length > 3" class="tree__row tree__l3 muted">… 共 {{ stems.length }} 对</div>
+          <div v-if="stems.length > 2" class="tree__row tree__l3">{{ stems[stems.length - 1] }}.jpg <span class="muted">+</span> {{ stems[stems.length - 1] }}.mov</div>
+          <div class="tree__row tree__l2"><Folder :size="13" /> 视频片段\</div>
+          <div v-for="st in stems.slice(0, 2)" :key="'mp' + st" class="tree__row tree__l3">{{ st }}.mp4</div>
+          <div v-if="stems.length > 2" class="tree__row tree__l3 muted">… 共 {{ stems.length }} 个</div>
+          <div class="tree__row tree__l2"><FileText :size="13" /> 导出报告_v{{ p.edit_version }}.html</div>
+          <div class="tree__row tree__l2"><FileJson :size="13" /> manifest_v{{ p.edit_version }}.json</div>
         </div>
       </section>
 
@@ -346,6 +351,9 @@ function backToReview() {
 }
 .tree__l2 {
   padding-left: 38px;
+}
+.tree__l3 {
+  padding-left: 60px;
 }
 .exp__note {
   color: var(--warning);

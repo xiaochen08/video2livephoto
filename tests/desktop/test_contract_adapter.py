@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -39,6 +40,45 @@ def test_contract_open_and_timeline_returns_string_pts(
     frame = server.handle(_request("preview.getFrame", {"project_id": project_id, "frame": 0, "size": "thumb"}))
     assert frame["frame"]["exact"] is True
     assert frame["frame"]["url"].startswith("data:image/jpeg;base64,")
+    server._close_project()
+
+
+def test_contract_export_uses_custom_root_and_timestamped_project_folder(
+    small_mp4: Path,
+    ffmpeg_path: str,
+    ffprobe_path: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    monkeypatch.setattr("desktop.service.Toolchain.discover", lambda: toolchain)
+    app_data = tmp_path / "appdata"
+    custom_root = tmp_path / "custom-exports"
+    app_data.mkdir()
+    (app_data / "settings.json").write_text(
+        json.dumps({"default_output_dir": str(custom_root)}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VIDEO2LIVEPHOTO_APP_DATA_DIR", str(app_data))
+    server = JsonlIpcServer()
+    imported = server.handle(_request("import", {"source_path": str(small_mp4), "project_path": str(tmp_path / "export.sqlite3"), "cache_root": str(tmp_path / "cache")}))
+    project_id = imported["project"]["project_id"]
+    opened = server.handle(_request("projects.open", {"project_id": project_id}))["result"]["project"]
+    assert opened["export_settings"]["output_dir"] == str(custom_root)
+    assert server.runner is not None
+    server.runner.pause()
+    result = server.handle(_request("export.createBatch", {
+        "project_id": project_id,
+        "edit_version": opened["edit_version"],
+        "clip_ids": [opened["timeline"]["clips"][0]["clip_id"]],
+        "settings": opened["export_settings"],
+        "acknowledged": {"unreviewed_cuts": True, "livephoto_hints": True, "replace_existing": True},
+        "request_id": "timestamped-export",
+    }))
+    output_dir = Path(result["output_dir"])
+    assert output_dir.parent == custom_root.resolve()
+    assert output_dir.name.startswith(f"livephotos {small_mp4.stem} ")
+    assert output_dir.is_dir()
     server._close_project()
 
 

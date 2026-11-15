@@ -60,7 +60,7 @@ export function checkNameBase(base: string): NameIssue[] {
 
 export const MAX_PATH = 260
 
-export function checkOutputPath(dir: string, longestFile: string): NameIssue[] {
+export function checkOutputPath(dir: string, longestFile: string, batchFolder = ''): NameIssue[] {
   const issues: NameIssue[] = []
   if (!dir.trim()) {
     issues.push({ level: 'error', code: 'EMPTY_DIR', message: '请选择保存位置。' })
@@ -69,7 +69,8 @@ export function checkOutputPath(dir: string, longestFile: string): NameIssue[] {
   if (!/^[a-zA-Z]:[\\/]/.test(dir) && !dir.startsWith('\\\\')) {
     issues.push({ level: 'error', code: 'NOT_ABSOLUTE', message: '保存位置需要是完整的 Windows 路径，例如 D:\\导出。' })
   }
-  const full = `${dir.replace(/[\\/]+$/, '')}\\LivePhoto\\${longestFile}`
+  const folder = batchFolder ? `${sanitizeForFileName(batchFolder)}\\` : ''
+  const full = `${dir.replace(/[\\/]+$/, '')}\\${folder}LivePhoto\\${longestFile}`
   if (full.length >= MAX_PATH) {
     issues.push({
       level: 'warning',

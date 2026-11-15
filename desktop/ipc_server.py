@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -506,6 +507,41 @@ class JsonlIpcServer:
             },
         }
 
+    def _settings_defaults(self) -> dict[str, Any]:
+        defaults = {
+            "default_output_dir": str(Path.home() / "Videos" / "Video2LivePhoto"),
+            "default_quality": "source",
+            "default_color": "sdr_rec709",
+            "cache_limit_gb": 20,
+            "proxy_resolution": "720p",
+        }
+        try:
+            defaults.update(json.loads(self._settings_path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            pass
+        return defaults
+
+    @staticmethod
+    def _safe_export_component(value: str, fallback: str = "项目") -> str:
+        cleaned = re.sub(r'[<>:"/\\|?*\u0000-\u001f]', "_", str(value or "")).strip(" .")
+        if not cleaned:
+            cleaned = fallback
+        if cleaned.lower() in {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}:
+            cleaned = f"{cleaned}_"
+        return cleaned
+
+    def _new_export_directory(self, root: Path, project_name: str, batch_id: str) -> Path:
+        root = root.resolve()
+        timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+        folder_name = f"livephotos {self._safe_export_component(project_name)} {timestamp}"
+        candidate = root / folder_name
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            candidate = root / f"{folder_name}_{batch_id[:8]}"
+            candidate.mkdir(parents=True, exist_ok=False)
+        return candidate.resolve()
+
     def _run_analysis(self, analysis_id: str, params: dict[str, Any], token: CancellationToken, epoch: int) -> dict[str, Any]:
         source_path = str(self._resolve_media_path(params))
         request_id = str(params.get("request_id") or "")
@@ -647,15 +683,26 @@ class JsonlIpcServer:
         selected = [segment for segment in service.snapshot.segments if segment.clip_id in clip_ids and segment.selected_for_export]
         if not selected:
             raise M3ProjectError("EMPTY_SELECTION", "没有参与导出的片段。")
-        output_dir = Path(str(settings.get("output_dir") or service.store.path.parent / "导出")).resolve()
         source = Path(service.snapshot.source_path).resolve()
+        if self.queue_store is None or self.runner is None:
+            raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
+        configured_root = str(settings.get("output_dir") or "").strip()
+        legacy_default = (source.parent / "导出").resolve()
+        root_value = configured_root or str(self._settings_defaults()["default_output_dir"])
+        root_path = Path(root_value).expanduser()
+        if not root_path.is_absolute():
+            raise M3ProjectError("OUTPUT_DIR_INVALID", "导出目录必须是绝对路径。")
+        root = root_path.resolve()
+        if root == legacy_default:
+            root = Path(str(self._settings_defaults()["default_output_dir"])).resolve()
         try:
-            output_dir.relative_to(source.parent)
+            root.relative_to(source.parent)
         except ValueError:
             pass
-        if output_dir == source or source in output_dir.parents:
+        if root == source or source in root.parents:
             raise M3ProjectError("OUTPUT_OVERWRITES_SOURCE", "导出目录不能位于源文件路径内。")
         batch_id = str(uuid.uuid4())
+        output_dir = self._new_export_directory(root, Path(service.snapshot.source_path).stem, batch_id)
         snapshot_id = str(uuid.uuid4())
         color_mode = "hdr" if settings.get("color") == "hdr_keep" else "sdr"
         temp_dir = service.store.path.parent / f".{service.store.path.stem}.export-tmp"
@@ -684,8 +731,6 @@ class JsonlIpcServer:
             })
             existing = self.queue_store.find_by_snapshot_hash(compute_snapshot_hash(job_snapshot)) if self.queue_store else []
             jobs.append(existing[0] if existing else self.queue_store.enqueue(clip_id=segment.clip_id, snapshot=job_snapshot, source_identity=service.snapshot.source_identity, temp_dir=str(temp_dir), output_dir=str(output_dir)))
-        if self.queue_store is None or self.runner is None:
-            raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
         self._batch_meta[batch_id] = {
             "project_id": service.snapshot.project_id,
             "job_ids": [job.job_id for job in jobs],
@@ -696,12 +741,12 @@ class JsonlIpcServer:
                 "project_id": service.snapshot.project_id,
                 "edit_version": int(getattr(service.snapshot, "saved_revision", 0)),
                 "created_at": datetime.now(timezone.utc).isoformat(),
-                "settings": {"output_dir": str(output_dir), "quality": settings.get("quality", "source"), "color": settings.get("color", "sdr_rec709"), "name_base": settings.get("name_base", Path(service.snapshot.source_path).stem)},
+                "settings": {"output_dir": str(output_dir), "output_root": str(root), "quality": settings.get("quality", "source"), "color": settings.get("color", "sdr_rec709"), "name_base": settings.get("name_base", Path(service.snapshot.source_path).stem)},
                 "clips": clip_snapshots,
             },
         }
         self.runner.pump()
-        return {"ok": True, "batch_id": batch_id, "snapshot_id": snapshot_id, "deduplicated": all(job.attempt_count > 0 for job in jobs)}
+        return {"ok": True, "batch_id": batch_id, "snapshot_id": snapshot_id, "output_dir": str(output_dir), "output_root": str(root), "deduplicated": all(job.attempt_count > 0 for job in jobs)}
 
     def _preview_request_id(self, request: dict[str, Any], params: dict[str, Any]) -> str:
         request_id = str(
@@ -829,7 +874,14 @@ class JsonlIpcServer:
         if method == "projects.open":
             project_id = str(params.get("project_id") or "")
             service = self._ensure_project(project_id)
-            return {"ok": True, "result": {"project": contract_project(service.snapshot, service), "warnings": []}}
+            project = contract_project(service.snapshot, service)
+            defaults = self._settings_defaults()
+            project["export_settings"].update({
+                "output_dir": str(defaults["default_output_dir"]),
+                "quality": str(defaults["default_quality"]),
+                "color": str(defaults["default_color"]),
+            })
+            return {"ok": True, "result": {"project": project, "warnings": []}}
         if method == "projects.pickProjectFile":
             # The main process may return a path for the native dialog.  It is
             # intentionally treated as a project id by the next open call.
@@ -915,7 +967,8 @@ class JsonlIpcServer:
             return self._contract_edit(service, params, request, undo=method.endswith("undo"), redo=method.endswith("redo"))
         if method == "export.preflight":
             service = self._ensure_project(str(params.get("project_id") or ""))
-            output_dir = Path(str((params.get("settings") or {}).get("output_dir") or service.store.path.parent / "导出")).resolve()
+            configured_root = str((params.get("settings") or {}).get("output_dir") or "").strip()
+            output_dir = Path(configured_root or str(self._settings_defaults()["default_output_dir"])).resolve()
             free = shutil.disk_usage(output_dir.parent if output_dir.parent.exists() else service.store.path.parent).free
             issues = []
             if service.pending_reviews():
@@ -1004,12 +1057,7 @@ class JsonlIpcServer:
         if method in {"files.openArtifact", "files.revealOutput", "files.pickOutputDir"}:
             raise AdapterContractError("FILE_ACTION_REQUIRES_ELECTRON", "文件打开与目录选择必须由 Electron 主进程执行。")
         if method == "settings.get":
-            defaults = {"default_output_dir": str(Path.home() / "Videos" / "Video2LivePhoto"), "default_quality": "source", "default_color": "sdr_rec709", "cache_limit_gb": 20, "proxy_resolution": "720p"}
-            try:
-                defaults.update(json.loads(self._settings_path.read_text(encoding="utf-8")))
-            except (OSError, json.JSONDecodeError):
-                pass
-            return {"ok": True, "settings": defaults}
+            return {"ok": True, "settings": self._settings_defaults()}
         if method == "settings.update":
             current = self._handle_contract({"id": request.get("id")}, "settings.get", {})["settings"]
             current.update(dict(params.get("patch") or params))

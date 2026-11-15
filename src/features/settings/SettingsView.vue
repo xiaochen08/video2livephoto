@@ -93,7 +93,7 @@ async function exportBundle() {
     <div class="set__body">
       <section v-if="ui.state.settingsSection === 'export' && settings" class="set__sec">
         <h2>导出默认</h2>
-        <p class="small muted">新项目使用这些默认值；每次导出时仍可在确认页修改。</p>
+        <p class="small muted">打开项目时使用这些默认值；每次导出时仍可在确认页修改。</p>
         <UiTextField :model-value="settings.default_output_dir" label="默认保存位置" mono commit-on-blur @commit="(v) => save({ default_output_dir: v })" />
         <div class="set__grid">
           <UiSelect :model-value="settings.default_quality" label="画质" :options="[{ value: 'source', label: '与源一致（推荐）' }, { value: 'high', label: '高画质' }, { value: 'compact', label: '节省空间' }]" @update:model-value="(v) => save({ default_quality: v })" />
@@ -104,7 +104,7 @@ async function exportBundle() {
             @update:model-value="(v) => save({ default_color: v })"
           />
         </div>
-        <p class="small muted">文件组织固定为：LivePhoto/（JPG + MOV）、视频片段/（MP4）、导出报告与版本化清单。</p>
+        <p class="small muted">每次导出会在此位置创建独立的“livephotos 项目名 时间戳”文件夹，内部包含 LivePhoto/（JPG + MOV）、视频片段/（MP4）、导出报告与版本化清单。</p>
       </section>
 
       <section v-else-if="ui.state.settingsSection === 'preview'" class="set__sec">
