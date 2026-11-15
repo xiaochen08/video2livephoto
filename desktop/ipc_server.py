@@ -438,7 +438,16 @@ class JsonlIpcServer:
         return {"ok": True, "project": self.service.to_dict()}
 
 
+def _configure_utf8_stdio() -> None:
+    """Keep JSONL IPC UTF-8 on Windows where the console default is often GBK."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> int:
+    _configure_utf8_stdio()
     logger = configure_logging("python-ipc", file_name="python.jsonl")
     install_uncaught_exception_logging(logger)
     return JsonlIpcServer(logger=logger).run()

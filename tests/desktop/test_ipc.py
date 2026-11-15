@@ -7,7 +7,21 @@ import time
 from pathlib import Path
 
 from core.media.toolchain import Toolchain
-from desktop.ipc_server import JsonlIpcServer
+from desktop.ipc_server import JsonlIpcServer, _configure_utf8_stdio
+
+
+def test_ipc_stdio_is_configured_as_utf8(monkeypatch) -> None:
+    calls: list[dict[str, str]] = []
+
+    class Stream:
+        def reconfigure(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(sys, "stdin", Stream())
+    monkeypatch.setattr(sys, "stdout", Stream())
+    monkeypatch.setattr(sys, "stderr", Stream())
+    _configure_utf8_stdio()
+    assert calls == [{"encoding": "utf-8", "errors": "replace"}] * 3
 
 
 def test_ipc_run_echoes_request_id(monkeypatch) -> None:
