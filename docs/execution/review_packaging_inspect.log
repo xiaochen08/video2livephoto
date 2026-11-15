@@ -1,0 +1,13 @@
+{
+  "python": "3.12.10",
+  "node": "v24.22.1",
+  "npm": "11.19.1",
+  "electron_project": "E:\\LIVE\\_audit\\video2livephoto-review",
+  "electron_builder": "E:\\LIVE\\_audit\\video2livephoto-review\\node_modules\\.bin\\electron-builder.cmd",
+  "bundled_python": null,
+  "bundled_ffmpeg": null,
+  "missing": [
+    "runtime/desktop-ipc-server.exe",
+    "runtime/ffmpeg/ffmpeg.exe+ffprobe.exe"
+  ]
+}
