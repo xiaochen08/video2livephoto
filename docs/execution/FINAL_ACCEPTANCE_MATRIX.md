@@ -8,7 +8,7 @@
 | M2 硬切/黑场/叠化/短镜头 | PASS（合成回归）；真实婚礼 10 条人工真值和召回率目标 BLOCKED | `docs/M2_DETECTION_REPORT.md` |
 | M3 导入/时间线/逐帧预览/审核 | PASS（Python/IPC/renderer build）；目标 Windows 原生窗口人工验收仍需外部执行 | `docs/M3_DESKTOP.md`、`delivery/v1.0/evidence/m3-empty-import-screen.png` |
 | M4 精准编码/音频/色彩 | PASS（VFR、B 帧、音频开关、GPU 回退、HDR10 合成样片）；复杂婚礼长片 BLOCKED | `docs/M4_M5_MEDIA_EXPORT.md`、`tests/media/test_encode.py` |
-| M5 JPG/MOV 配对和本地校验 | PASS（UUID、MakerNote、哈希、ffprobe、still-image-time）；Apple timed metadata/iPhone 真机 BLOCKED | `docs/M4_M5_MEDIA_EXPORT.md`、`tests/media/test_livephoto.py` |
+| M5 JPG/MOV 配对和本地校验 | PASS（UUID、MakerNote、哈希、ffprobe、mebx timed metadata、still-image-time）；iPhone 真机 BLOCKED | `docs/M4_M5_MEDIA_EXPORT.md`、`tests/media/test_livephoto.py` |
 | M6 队列/暂停/取消/重试/恢复/安全提交 | PASS（SQLite、快照去重、确认恢复、事务恢复回归）；真实断电、ACL、卷级空间不足 BLOCKED | `docs/M6_QUEUE.md`、`tests/queue/`、`tests/commit/`、`tests/desktop/test_ipc.py` |
 | M7 Windows 候选 | PASS（NSIS、win-unpacked、ZIP、sidecar ping、许可证清单）；未签名、安装卸载需目标机外部验收 | `docs/M7_PACKAGING.md`、`docs/execution/POST_REVIEW_PACKAGING.md` |
 | 独立复审 | CONDITIONAL PASS；源码/自动化通过，外部交付仍 BLOCKED | `docs/execution/INTERNAL_REVIEW_FINAL.md` |

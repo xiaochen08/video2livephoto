@@ -16,7 +16,7 @@
 - `core/media/`：FFprobe/FFmpeg 探测、fMP4 检查/规范化、显示帧索引、源身份、编码和取消。
 - `core/analysis/`：M2 硬切、黑场、叠化候选和短镜头保留。
 - `desktop/`：M3 项目 SQLite、时间线编辑、逐帧预览、JSONL IPC 和导出编排。
-- `core/livephoto/`：M5 JPG MakerNote、MOV QuickTime metadata、manifest 和本地校验；Apple timed metadata 轨仍未宣称通过。
+- `core/livephoto/`：M5 JPG MakerNote、MOV QuickTime metadata、`mebx` timed metadata 轨、manifest 和本地校验；Apple 平台真机兼容仍未宣称通过。
 - `core/queue/` 与 `core/commit/`：M6 快照队列、用户确认恢复、事务日志、备份和安全提交。
 - `electron/`、`src/renderer/`、`packaging/`：M3 桌面壳、Vue renderer、Python sidecar 和 Windows 候选构建。
 

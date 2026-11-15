@@ -49,6 +49,6 @@ py -3 -m ruff check desktop tests/desktop
 ## 已知限制
 
 - 当前分支不包含 M2 检测实现；接入时只能通过注入 provider 或后续主控桥接，不应把完整时间线当作自动检测结果。
-- M4 编码、HDR 转换、M5 Live Photo 封装和导出文件生成尚未实现。
+- M4 编码、HDR 转换、M5 Live Photo 封装和导出文件生成已由 M6 `start_export` 接通；Apple/iPhone 真机兼容仍按 M5 文档标记限制。
 - Electron 候选包尚未打包为安装程序，M7 负责生产候选安装包。
 - npm 安装报告了上游审计警告；依赖版本和再分发许可由 M7 统一审计，不能用 npm install 成功替代许可证验收。
