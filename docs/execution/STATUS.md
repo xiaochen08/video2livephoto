@@ -16,7 +16,7 @@
 | B | M3 桌面界面与编辑 | `E:\LIVE\_audit\video2livephoto-b` / `0917a742` | 已集成 |
 | C | M4 编码/音频/色彩、M5 封装 | `E:\LIVE\_audit\video2livephoto-c` / `e75898f` | 已集成 |
 | D | M6 队列恢复、M7 打包 | `E:\LIVE\_audit\video2livephoto-d` / `adde285` | 已集成 |
-| R | 独立总审 | `E:\\LIVE\\_audit\\video2livephoto-review` / `c25cc115` | 绑定 `589c417`，CONDITIONAL PASS；外部交付 BLOCKED |
+| R | 独立总审 | `E:\\LIVE\\_audit\\video2livephoto-review` / `ed1c0bd` | 绑定 `ed115df`，无新 P0/P1；源码/自动化 CONDITIONAL PASS，外部交付 BLOCKED |
 
 ## 首轮动作
 

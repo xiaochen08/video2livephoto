@@ -11,7 +11,7 @@
 | M5 JPG/MOV 配对和本地校验 | PASS（UUID、MakerNote、哈希、ffprobe、mebx timed metadata、still-image-time）；iPhone 真机 BLOCKED | `docs/M4_M5_MEDIA_EXPORT.md`、`tests/media/test_livephoto.py` |
 | M6 队列/暂停/取消/重试/恢复/安全提交 | PASS（SQLite、快照去重、确认恢复、事务恢复回归）；真实断电、ACL、卷级空间不足 BLOCKED | `docs/M6_QUEUE.md`、`tests/queue/`、`tests/commit/`、`tests/desktop/test_ipc.py` |
 | M7 Windows 候选 | PASS（NSIS、win-unpacked、ZIP、sidecar ping、许可证清单）；未签名、安装卸载需目标机外部验收 | `docs/M7_PACKAGING.md`、`docs/execution/POST_REVIEW_PACKAGING.md` |
-| 独立复审 | `589c417` 上 CONDITIONAL PASS；复审后功能补强待 R 快速复核，外部交付仍 BLOCKED | `docs/execution/INTERNAL_REVIEW_FINAL.md`、`docs/execution/POST_REVIEW_FUNCTIONAL.md` |
+| 独立复审 | `589c417` 首轮 CONDITIONAL PASS；`ed115df` 复审后功能补强无新 P0/P1，外部交付仍 BLOCKED | `docs/execution/INTERNAL_REVIEW_FINAL.md`、`docs/execution/INTERNAL_REVIEW_POST_FUNCTIONAL.md` |
 
 ## 固定执行结果
 

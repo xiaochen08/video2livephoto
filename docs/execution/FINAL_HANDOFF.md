@@ -30,5 +30,6 @@ sidecar 直接以 JSONL `ping` 启动返回 `m3-python`；候选包包含 `THIRD
 - 首轮独立审查报告固定在 `E:\\LIVE\\_audit\\video2livephoto-review` 分支提交 `dde99d5`，发现的 P0/P1 已在后续提交修复；最终复审报告为 `c25cc115`，绑定 `589c417`，结论为源码/自动化 CONDITIONAL PASS、外部交付 BLOCKED。
 - 复审后候选包补证见 `docs/execution/POST_REVIEW_PACKAGING.md`；安装器和 ZIP 都从 `589c417` 代码重新冻结，但尚未在独立目标 Windows 机完成安装/卸载全流程。
 - 按本轮“先完成功能、暂不做打包测试”要求，M1/M5/M6 的后续源码补强尚未重新冻结到 Windows 候选包；下一次打包必须从当前 HEAD 重新生成并重新计算指纹。
+- 复审后源码记录见 `docs/execution/INTERNAL_REVIEW_POST_FUNCTIONAL.md`，绑定 `ed115df`，结论仍为源码/自动化 CONDITIONAL PASS、外部交付 BLOCKED。
 - 完整测试矩阵见 `docs/execution/FINAL_ACCEPTANCE_MATRIX.md`；限制和阻塞见 `docs/execution/KNOWN_LIMITATIONS.md`。
 
