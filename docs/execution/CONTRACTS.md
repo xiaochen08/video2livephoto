@@ -3,10 +3,10 @@
 | 契约 | 当前来源 | 责任人 | 兼容要求 |
 |---|---|---|---|
 | `MediaProbeResult` / `FrameIndexReport` / `NormalizedMediaRef` | `core/protocol/media.py` | 主控 + A | 保留 M1 字段，允许向后兼容扩展 |
-| 镜头段/编辑快照/导出任务/恢复状态 | 待主控定义 | 主控 | 必须有版本号和快照哈希 |
-| UI IPC | 待 B 提议 | 主控 + B | 不允许界面直接覆盖源媒体 |
-| 编码/封装结果 manifest | 待 C 提议 | 主控 + C | 每个输出文件带 SHA-256 和 UUID |
-| 队列事务状态 | 待 D 提议 | 主控 + D | 崩溃可恢复，用户确认后继续 |
+| 镜头段/编辑快照/导出任务/恢复状态 | `desktop/models.py`、`core/queue/store.py` | 主控 | `m3.desktop.v1`、`snapshot_hash`、用户确认恢复 |
+| UI IPC | `desktop/ipc_server.py` + `electron/preload.cjs` | 主控 + B | JSONL `m3.ipc.v1`；渲染进程不直接处理媒体或覆盖源 |
+| 编码/封装结果 manifest | `core/media/encode.py`、`core/livephoto/pack.py` | 主控 + C | 每个输出文件 SHA-256、配对 UUID、本地 ffprobe 校验 |
+| 队列事务状态 | `core/queue/*`、`core/commit/transaction.py` | 主控 + D | SQLite 状态机、事务日志、备份恢复、用户确认后继续 |
 
 ## 已集成接口
 
