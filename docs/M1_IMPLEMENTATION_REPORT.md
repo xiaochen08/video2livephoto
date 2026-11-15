@@ -17,7 +17,7 @@
 - `core/media/cache.py`：包含源身份、工具链和 schema 的可复用索引缓存。
 - `core/media/normalize.py`：缓存目录内的 fMP4 无重编码规范化和时间轴偏移验证。
 - `core/media/diagnostic.py`：`probe`、`index`、`inspect-fragments`、`normalize` 诊断入口。
-- `tests/`：28 个自动化测试；`docs/M1_MEDIA_FOUNDATION.md`、`docs/M1_TOOLCHAIN.md` 和 `docs/M1_FIXTURE_MANIFEST.md` 为接口、工具链和样片记录。
+- `tests/`：M1 原有 28 个自动化测试保留；集成分支全量 Python 回归为 71 项。`docs/M1_MEDIA_FOUNDATION.md`、`docs/M1_TOOLCHAIN.md` 和 `docs/M1_FIXTURE_MANIFEST.md` 为接口、工具链和样片记录。
 
 ## 自动化测试结果
 

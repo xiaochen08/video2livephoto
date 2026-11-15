@@ -29,13 +29,15 @@ Electron 31.7.7 使用本地 `electronDist`，无需重新下载 Electron 压缩
 FFmpeg/FFprobe 使用冻结构建，复制到 `runtime/ffmpeg/`
 ```
 
-已生成并验证 Windows `win-unpacked` 候选目录，包含 Electron、Python sidecar 和 FFmpeg/FFprobe；sidecar JSONL `ping` 返回 `m3-python`。
+已生成并验证 Windows `win-unpacked` 候选目录和 NSIS 安装器，均包含 Electron、Python sidecar 和 FFmpeg/FFprobe；sidecar JSONL `ping` 返回 `m3-python`。
 
-- 候选目录：`delivery/v1.0/win-unpacked/`
-- 离线候选 ZIP：`delivery/v1.0/Video2LivePhoto-1.0.0-candidate-win-unpacked.zip`
-- ZIP SHA-256：`18A6659471C6EFD9F42C98180400589A36CCD3C670BC1BF1169145EBC9B0E095`
-- Python sidecar SHA-256：`BFC78B484358D79288D809063AB8C1B233D200FE9F4FF563B4ADBE688FEF4CA3`
+- 候选目录：`delivery/v1.0/installer/win-unpacked/`
+- 离线候选 ZIP：`delivery/v1.0/Video2LivePhoto-1.0.0-final-candidate-win-unpacked.zip`
+- ZIP SHA-256：`B9470022CB68021F6634B63393DCCA75D066B25A06FF533397769B5BF83764CE`
+- NSIS 安装器：`delivery/v1.0/nsis-attempt/Video2LivePhoto Setup 1.0.0-candidate.exe`
+- NSIS SHA-256：`AEE9047007C424EEB14238FADECF66248DEDE9ED64642FE3650F93016D4B04E1`
+- Python sidecar SHA-256：`2E8074C661DA460EB4DCF0E492A2FBFC02B1B3DEF5E3F8C7D1EA0AF366929668`
 - FFmpeg SHA-256：`6632B01B7981092AF425787CD16DDF6449E7BD634AE756398BF4189DB8C42482`
 - FFprobe SHA-256：`C2AD6060AE546E850E436A79786FDC68C8ACC623C283D38E225B0E13163B6446`
 
-NSIS 安装器仍为 BLOCKED：electron-builder 在生成 `.exe` 安装器时需要从 GitHub 下载 `nsis-resources`，当前网络无法连接该地址。不能把 `win-unpacked` 或 ZIP 标记为 NSIS 安装器通过；安装/卸载、无外部 Python 和离线启动需在取得 NSIS 资源后复测。
+本次网络环境已成功取得 electron-builder 的 `nsis-3.0.4.1` 与 `nsis-resources-3.4.1`，NSIS 候选已生成并有 SHA-256。安装/卸载、签名、iPhone Photos 兼容性仍不等同于发布批准，需在目标 Windows 机器执行外部验收。

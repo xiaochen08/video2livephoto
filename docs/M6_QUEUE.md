@@ -2,7 +2,7 @@
 
 ## 设计边界
 
-`core.queue` 不依赖 UI、FFmpeg 或 Electron。编码器通过 `QueueRunner` 接收一个冻结的 `QueueJob.snapshot`，在独立受控 worker 中报告进度；SQLite 是唯一持久状态源。队列默认一个 worker，可显式设为两个，绝不会超过两个。
+`core.queue` 不依赖 UI、FFmpeg 或 Electron。编码器通过 `QueueRunner` 接收一个冻结的 `QueueJob.snapshot`，在独立受控 worker 中报告进度；SQLite 是唯一持久状态源。产品路径先以一个 worker 启动，首个任务成功且导出卷有至少 8 GiB 空闲、逻辑 CPU 至少 4 个时才提升到两个；硬上限始终为两个。
 
 任务状态是版本化字符串：
 
@@ -18,7 +18,7 @@
 | `stale` | 快照改变，需要重新确认 |
 | `interrupted` | 程序退出或当前片段取消；重启后必须用户确认 |
 
-`QueueStore.mark_interrupted_for_restart()` 只把活动任务标为 `interrupted`，不会启动编码。只有 `confirm_recovery(job_ids)` 后才回到 `pending`。成功任务不重跑，失败任务通过 `retry()` 单独重试；`snapshot_hash` 使用 UTF-8、排序键的 canonical JSON SHA-256。
+`QueueStore.mark_interrupted_for_restart()` 只把活动任务标为 `interrupted`，不会启动编码。IPC/UI 的 `confirm_recovery(job_ids)` 会先尝试恢复事务日志，再回到 `pending` 并由用户显式确认后领取。成功任务不重跑，失败任务通过 `retry()` 单独重试；`snapshot_hash` 使用 UTF-8、排序键的 canonical JSON SHA-256。`start_export` 按不可变快照哈希幂等，重复点击返回原任务。
 
 ## SQLite 字段
 
@@ -32,7 +32,7 @@
 
 ```text
 py -3 -m pytest -q tests/queue tests/commit
-8 passed
+10 passed
 ```
 
 测试覆盖快照稳定性、恢复需确认、状态非法跳转、重试上限、暂停/恢复、取消不计成功、旧版备份、半成品拒绝和源文件变化拒绝。真实卷级 ENOSPC、ACL 和外部断电矩阵仍由最终 Windows 环境单独标记 BLOCKED。

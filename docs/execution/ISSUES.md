@@ -9,7 +9,7 @@
 | M1-LICENSE | P1 | OPEN | GPL FFmpeg 再分发清单需绑定候选包 | 主控/D |
 | M2-REAL-SAMPLES | P1 | BLOCKED | 实拍婚礼样片和人工切点对照待取得，不能宣称召回率达标 | A/主控 |
 | M5-DEVICE | P1 | BLOCKED | Live Photo iPhone 真机兼容性必须外部验证 | C/主控 |
-| M7-NSIS-NETWORK | P1 | BLOCKED | electron-builder NSIS 资源需 GitHub 下载，当前网络无法连接；已交付 win-unpacked/ZIP 候选 | 主控/D |
+| M7-NSIS-NETWORK | P1 | RESOLVED | 本轮已成功下载并生成 NSIS 候选；安装/卸载和签名仍需目标 Windows 外部验收 | 主控/D |
 | R-ENCODE-SOURCE-COLLISION | P0 | RESOLVED | `encode_segment()` 现在在编码前拒绝输出路径与源文件相同或同物理文件，并有 SHA-256 回归测试 | 主控/R |
 | R-COMMIT-JOURNAL-WINDOW | P1 | RESOLVED | 提交前先写入完整 `committing` 文件计划，恢复测试覆盖备份已移动/目标缺失场景 | 主控/R |
 | R-MULTI-DEFAULT-VIDEO | P1 | RESOLVED | 多个默认非附图视频流返回 `AMBIGUOUS_VIDEO_STREAM`，不再静默选择最低索引 | 主控/R |
