@@ -39,7 +39,7 @@ result = pack_live_photo(
 )
 ```
 
-输出三件文件：`<base>.JPG`、`<base>.MOV`、`<base>.manifest.json`。JPG 封面从已编码片段第一显示帧提取，并写入原项目 Apple MakerNote `0x0011`。MOV 通过 FFmpeg `-c copy` 重封装，写入 `com.apple.quicktime.content.identifier` 与 `com.apple.quicktime.still-image-time` 的 QuickTime metadata。
+输出三件文件：`<base>.JPG`、`<base>.MOV`、`<base>.manifest.json`。JPG 封面从已编码片段第一显示帧提取，并写入原项目 Apple MakerNote `0x0011`。MOV 先由 FFmpeg `-c copy` 无损重封装，再通过有界 `moov` 解析和分块 `mdat` 复制追加 Apple `mebx` timed metadata 轨。轨道声明 `mdta/com.apple.quicktime.still-image-time`（有符号 int8 类型），样本值为 `-1`，编辑列表把这一条样本放在请求的显示时间。电影级 `com.apple.quicktime.content.identifier` 继续写入并在输出中复核。
 
 manifest schema 版本为 `1`，至少包含：
 
@@ -47,9 +47,11 @@ manifest schema 版本为 `1`，至少包含：
 - JPG/MOV 路径、字节数和 SHA-256；
 - MOV 时长、视频帧数；
 - `jpg_makernote_uuid`、`mov_content_identifier`、本地 FFprobe 流摘要；
-- `timed_metadata_track` 与 `compatibility` 字段。
+- `timed_metadata_track`、`timed_metadata_codec`、样本偏移/大小、时基、编辑列表与 `compatibility` 字段。
 
-当前 `timed_metadata_track` 固定报告为 `false`：FFmpeg 写入的 moov metadata 与 JPEG MakerNote 已可由本地工具复核，但尚未证明 Apple `mebx` timed metadata 轨格式，也没有 iPhone 真机导入证据。因此不宣称 iPhone Photos、锁屏壁纸或社交平台兼容通过。
+`timed_metadata_track=true` 只表示本地自写 box parser、FFprobe 流摘要和逐样本标记检查均通过。实现使用 `core/livephoto/assets/apple-meta-trak.bin` 作为 MIT 授权的 `mebx` 轨模板，并在写入时重置轨道 ID、电影时基、编辑列表、样本偏移和视频参考尺寸。未进行 iPhone Photos/锁屏壁纸/社交平台真机导入，因此 `compatibility` 仍为 `local-validation-only`，不能把本地 PASS 解释为 Apple 平台兼容通过。
+
+封装不把完整视频读入 Python 内存：只读取有界 `moov`（超过 64 MiB 安全拒绝），再以 8 MiB 分块复制 `mdat`。单一 `moov`/`mdat` 是安全注入前提；多段或碎片化布局返回 `LIVEPHOTO_UNSUPPORTED_LAYOUT`，由上层保留原产物并报告失败。
 
 ## 安全与失败语义
 
@@ -60,4 +62,4 @@ manifest schema 版本为 `1`，至少包含：
 
 ## 已验证与待验证
 
-已在本机验证 H.264 B 帧、VFR、无音轨/有音轨、GPU 编码器故障后 CPU 回退、HDR10→Rec.709 SDR、JPG/MOV 配对 UUID、哈希和 FFprobe 解码。100 段连续导出、复杂实拍婚礼素材、Apple timed metadata 轨和 iPhone 真机导入仍需由集成测试/外部设备验证。
+已在本机验证 H.264 B 帧、VFR、无音轨/有音轨、GPU 编码器故障后 CPU 回退、HDR10→Rec.709 SDR、JPG/MOV 配对 UUID、哈希、mebx timed metadata 轨、非零 still-image-time 编辑列表和 FFprobe 解码。100 段连续导出、复杂实拍婚礼素材和 iPhone 真机导入仍需由集成测试/外部设备验证。
