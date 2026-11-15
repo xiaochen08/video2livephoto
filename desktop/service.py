@@ -4,6 +4,8 @@ import base64
 import copy
 import sqlite3
 import subprocess
+import threading
+import time
 import uuid
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -11,7 +13,7 @@ from typing import Any
 
 from core.analysis.shot_detection import detect_shots
 from core.media.frame_index import build_frame_index
-from core.media.process import CancellationToken
+from core.media.process import CancellationToken, kill_process
 from core.media.probe import probe_media
 from core.media.source_identity import capture_identity, identities_match
 from core.media.toolchain import Toolchain, process_creation_flags
@@ -219,8 +221,17 @@ class M3ProjectService:
         end = min(self.snapshot.frame_count, center_index + max(0, radius) + 1)
         return [self.frame_at(index) for index in range(start, end)]
 
-    def preview_frame(self, display_index: int, *, width: int = 640) -> dict[str, Any]:
+    def preview_frame(
+        self,
+        display_index: int,
+        *,
+        width: int = 640,
+        token: CancellationToken | None = None,
+    ) -> dict[str, Any]:
         """Decode one bounded preview JPEG without loading the source into Python."""
+        token = token or CancellationToken()
+        if token.cancelled:
+            raise M3ProjectError("CANCELLED", "帧预览已取消。")
         frame = self.frame_at(display_index)
         timestamp = (
             frame.best_effort_pts if frame.best_effort_pts is not None else frame.pts
@@ -231,12 +242,21 @@ class M3ProjectService:
             )
         width = max(160, min(int(width), 1280))
         selected_stream = int((self.snapshot.probe or {}).get("selected_video_stream", 0))
-        result = subprocess.run(
+        time_base_num = int(frame.time_base_num or 0)
+        time_base_den = int(frame.time_base_den or 1)
+        seek_seconds = max(0.0, float(timestamp * time_base_num / time_base_den))
+        seek_text = f"{seek_seconds:.12f}".rstrip("0").rstrip(".") or "0"
+        process = subprocess.Popen(
             [
                 self.toolchain.ffmpeg.path,
                 "-hide_banner",
                 "-loglevel",
                 "error",
+                # Seek to the nearest keyframe before the target, then keep
+                # the exact PTS filter below.  This avoids decoding the whole
+                # source from frame zero while preserving frame identity.
+                "-ss",
+                seek_text,
                 "-copyts",
                 "-i",
                 self.snapshot.source_path,
@@ -260,27 +280,61 @@ class M3ProjectService:
                 "pipe:1",
             ],
             shell=False,
-            check=False,
-            capture_output=True,
-            timeout=30,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             creationflags=process_creation_flags(),
         )
-        if result.returncode != 0 or not result.stdout:
+        result: dict[str, bytes] = {}
+        errors: list[BaseException] = []
+
+        def _communicate() -> None:
+            try:
+                stdout, stderr = process.communicate()
+                result["stdout"] = stdout
+                result["stderr"] = stderr
+            except BaseException as exc:  # propagate reader failures to caller
+                errors.append(exc)
+
+        reader = threading.Thread(
+            target=_communicate, name="m3-preview-communicate", daemon=True
+        )
+        reader.start()
+        started = time.monotonic()
+        while reader.is_alive():
+            if token.cancelled:
+                kill_process(process)
+                reader.join(timeout=2)
+                raise M3ProjectError("CANCELLED", "帧预览已取消。")
+            if time.monotonic() - started > 30:
+                kill_process(process)
+                reader.join(timeout=2)
+                raise M3ProjectError("PREVIEW_TIMEOUT", "当前帧预览解码超时。")
+            reader.join(timeout=0.05)
+        reader.join(timeout=1)
+        if errors:
+            raise M3ProjectError(
+                "PREVIEW_DECODE_FAILED", "当前帧预览解码失败。"
+            ) from errors[0]
+        if token.cancelled:
+            raise M3ProjectError("CANCELLED", "帧预览已取消。")
+        stdout = result.get("stdout", b"")
+        stderr = result.get("stderr", b"")
+        if process.returncode != 0 or not stdout:
             raise M3ProjectError(
                 "PREVIEW_DECODE_FAILED",
                 "当前帧预览解码失败。",
                 details={
-                    "stderr": result.stderr.decode("utf-8", errors="replace")[-1000:]
+                    "stderr": stderr.decode("utf-8", errors="replace")[-1000:]
                 },
             )
-        if len(result.stdout) > 8 * 1024 * 1024:
+        if len(stdout) > 8 * 1024 * 1024:
             raise M3ProjectError("PREVIEW_TOO_LARGE", "预览帧超过内存上限。")
         return {
             "display_index": display_index,
             "pts": timestamp,
             "mime": "image/jpeg",
             "data_uri": "data:image/jpeg;base64,"
-            + base64.b64encode(result.stdout).decode("ascii"),
+            + base64.b64encode(stdout).decode("ascii"),
         }
 
     def pending_reviews(self) -> list[CutPoint]:

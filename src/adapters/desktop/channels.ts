@@ -19,6 +19,7 @@ export const CHANNELS = {
   'analysis.reanalyze': 'analysis.reanalyze',
   'preview.getSource': 'preview.getSource',
   'preview.getFrame': 'preview.getFrame',
+  'preview.cancel': 'preview.cancel',
   'preview.releaseFrame': 'preview.releaseFrame',
   'timeline.apply': 'timeline.apply',
   'timeline.undo': 'timeline.undo',

@@ -20,6 +20,7 @@ import type { Project } from '@/domain/types'
 
 type M3Bridge = {
   request(method: string, params?: Record<string, unknown>): Promise<any>
+  cancel?(previewRequestId: string): Promise<any>
   pickFile(options?: Record<string, unknown>): Promise<string | null>
   pathForFile?(file: File): string | null
   on?(channel: string, listener: (payload: unknown) => void): () => void
@@ -100,9 +101,32 @@ function projectFromResponse(response: any): Project {
   return normalizeProject(response?.project ?? response?.result?.project ?? response)
 }
 
+type PreviewConsumer = {
+  resolve: (value: FrameResult) => void
+  reject: (reason: unknown) => void
+  signal?: AbortSignal
+  abortHandler?: () => void
+  aborted: boolean
+}
+
+type PreviewEntry = {
+  key: string
+  requestId: string
+  request: FrameRequest
+  consumers: Set<PreviewConsumer>
+  started: boolean
+  settled: boolean
+  cancelSent: boolean
+}
+
 export class DesktopAdapter implements V2LPAdapter {
   readonly mode = 'desktop' as const
   private readonly bridge: M3Bridge | null = typeof window !== 'undefined' ? window.m3 ?? null : null
+  private readonly previewMaxConcurrent = 2
+  private previewActive = 0
+  private previewSequence = 0
+  private readonly previewQueue: PreviewEntry[] = []
+  private readonly previewEntries = new Map<string, PreviewEntry>()
 
   private async call<T>(method: string, params: object = {}, signal?: AbortSignal, timeoutMs = 60_000): Promise<T> {
     if (!this.bridge) throw asAppError({ code: 'BRIDGE_UNAVAILABLE', message: '未检测到桌面桥接，正式模式不会使用演示数据。', retryable: true }, 'BRIDGE_UNAVAILABLE')
@@ -133,6 +157,104 @@ export class DesktopAdapter implements V2LPAdapter {
       if (timer) clearTimeout(timer)
       if (signal && onAbort) signal.removeEventListener('abort', onAbort)
     }
+  }
+
+  private nextPreviewRequestId(): string {
+    this.previewSequence += 1
+    return `preview-${Date.now().toString(36)}-${this.previewSequence.toString(36)}`
+  }
+
+  private previewKey(req: FrameRequest): string {
+    return JSON.stringify([req.project_id, req.frame, req.size])
+  }
+
+  private cancelPreviewEntry(entry: PreviewEntry): void {
+    if (entry.cancelSent || entry.settled) return
+    entry.cancelSent = true
+    const cancellation = this.bridge?.cancel?.(entry.requestId)
+    if (cancellation) {
+      void cancellation.catch(() => undefined)
+      return
+    }
+    void this.call('preview.cancel', { preview_request_id: entry.requestId }, undefined, 5_000).catch(() => undefined)
+  }
+
+  private settlePreview(entry: PreviewEntry, error: unknown, result?: FrameResult): void {
+    if (entry.settled) return
+    entry.settled = true
+    if (this.previewEntries.get(entry.key) === entry) this.previewEntries.delete(entry.key)
+    for (const consumer of entry.consumers) {
+      if (consumer.signal && consumer.abortHandler) consumer.signal.removeEventListener('abort', consumer.abortHandler)
+      if (consumer.aborted) continue
+      if (error) consumer.reject(error)
+      else if (result) consumer.resolve(result)
+    }
+    entry.consumers.clear()
+  }
+
+  private pumpPreviews(): void {
+    while (this.previewActive < this.previewMaxConcurrent && this.previewQueue.length > 0) {
+      const entry = this.previewQueue.shift()
+      if (!entry || entry.settled || entry.consumers.size === 0) {
+        if (entry && this.previewEntries.get(entry.key) === entry) this.previewEntries.delete(entry.key)
+        continue
+      }
+      entry.started = true
+      this.previewActive += 1
+      void this.call<any>('preview.getFrame', { ...entry.request, preview_request_id: entry.requestId }, undefined, 60_000)
+        .then((response) => this.settlePreview(entry, null, (response.frame ?? response) as FrameResult))
+        .catch((error: unknown) => {
+          if (error instanceof AdapterError && error.error.code === 'BACKEND_TIMEOUT') this.cancelPreviewEntry(entry)
+          this.settlePreview(entry, error)
+        })
+        .finally(() => {
+          this.previewActive -= 1
+          this.pumpPreviews()
+        })
+    }
+  }
+
+  private requestPreview(req: FrameRequest, signal?: AbortSignal): Promise<FrameResult> {
+    if (signal?.aborted) return Promise.reject(abortError())
+    const key = this.previewKey(req)
+    let entry = this.previewEntries.get(key)
+    if (!entry) {
+      entry = {
+        key,
+        requestId: this.nextPreviewRequestId(),
+        request: { ...req },
+        consumers: new Set<PreviewConsumer>(),
+        started: false,
+        settled: false,
+        cancelSent: false,
+      }
+      this.previewEntries.set(key, entry)
+      this.previewQueue.push(entry)
+    }
+    const target = entry
+    return new Promise<FrameResult>((resolve, reject) => {
+      const consumer: PreviewConsumer = { resolve, reject, signal, aborted: false }
+      const abort = () => {
+        if (consumer.aborted || target.settled) return
+        consumer.aborted = true
+        target.consumers.delete(consumer)
+        reject(abortError())
+        if (target.consumers.size !== 0) return
+        if (!target.started) {
+          target.settled = true
+          if (this.previewEntries.get(target.key) === target) this.previewEntries.delete(target.key)
+          const index = this.previewQueue.indexOf(target)
+          if (index >= 0) this.previewQueue.splice(index, 1)
+          return
+        }
+        if (this.previewEntries.get(target.key) === target) this.previewEntries.delete(target.key)
+        this.cancelPreviewEntry(target)
+      }
+      consumer.abortHandler = abort
+      target.consumers.add(consumer)
+      signal?.addEventListener('abort', abort, { once: true })
+      this.pumpPreviews()
+    })
   }
 
   async connect(): Promise<ConnectionInfo> {
@@ -185,7 +307,7 @@ export class DesktopAdapter implements V2LPAdapter {
 
   preview: V2LPAdapter['preview'] = {
     getSource: (project_id) => this.call<any>('preview.getSource', { project_id }).then((result) => result.source ?? result),
-    getFrame: (req: FrameRequest, signal?: AbortSignal) => this.call<any>('preview.getFrame', { ...req }, signal).then((result) => result.frame ?? result) as Promise<FrameResult>,
+    getFrame: (req: FrameRequest, signal?: AbortSignal) => this.requestPreview(req, signal),
     releaseFrame: (url) => { void this.call('preview.releaseFrame', { url }).catch(() => undefined) },
   }
 

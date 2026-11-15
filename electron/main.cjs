@@ -108,6 +108,10 @@ class PythonBridge {
     });
   }
 
+  cancelPreview(previewRequestId) {
+    return this.request("preview.cancel", { preview_request_id: previewRequestId });
+  }
+
   stop() {
     if (this.process && !this.process.killed) {
       this.logger?.info("python.stop");
@@ -121,7 +125,7 @@ const bridge = new PythonBridge(null);
 
 const ALLOWED_REQUEST_METHODS = new Set([
   "ping", "connect", "import", "open", "state", "frame_window", "preview_frame", "add_cut", "move_cut", "delete_cut", "merge_segments", "set_segment_audio", "set_all_audio", "mark_cut_checked", "undo", "redo", "confirm_export", "start_export", "export_status", "pause_export", "resume_export", "confirm_recovery", "cancel_export", "retry_export",
-  "projects.listRecent", "projects.open", "projects.rename", "projects.removeRecent", "projects.save", "projects.relocateSource", "media.probe", "analysis.start", "analysis.result", "analysis.cancel", "analysis.reanalyze", "preview.getSource", "preview.getFrame", "preview.releaseFrame", "timeline.apply", "timeline.undo", "timeline.redo", "export.preflight", "export.createBatch", "tasks.subscribe", "tasks.unsubscribe", "tasks.getBatch", "tasks.listBatches", "tasks.pauseQueue", "tasks.resumeQueue", "tasks.cancelJob", "tasks.stopBatch", "tasks.retryFailed", "recovery.inspect", "recovery.continueRemaining", "recovery.dismiss", "files.readReport", "files.openArtifact", "files.revealOutput", "files.pickOutputDir", "settings.get", "settings.update", "settings.cacheInfo", "settings.clearCache", "diagnostics.info", "diagnostics.logs", "diagnostics.exportBundle", "app.quit",
+  "projects.listRecent", "projects.open", "projects.rename", "projects.removeRecent", "projects.save", "projects.relocateSource", "media.probe", "analysis.start", "analysis.result", "analysis.cancel", "analysis.reanalyze", "preview.getSource", "preview.getFrame", "preview.cancel", "preview.releaseFrame", "timeline.apply", "timeline.undo", "timeline.redo", "export.preflight", "export.createBatch", "tasks.subscribe", "tasks.unsubscribe", "tasks.getBatch", "tasks.listBatches", "tasks.pauseQueue", "tasks.resumeQueue", "tasks.cancelJob", "tasks.stopBatch", "tasks.retryFailed", "recovery.inspect", "recovery.continueRemaining", "recovery.dismiss", "files.readReport", "files.openArtifact", "files.revealOutput", "files.pickOutputDir", "settings.get", "settings.update", "settings.cacheInfo", "settings.clearCache", "diagnostics.info", "diagnostics.logs", "diagnostics.exportBundle", "app.quit",
 ]);
 
 function assertRequestAllowed(event, method, params) {
@@ -184,6 +188,13 @@ app.whenReady().then(() => {
   ipcMain.handle("m3:request", (event, method, params = {}) => {
     assertRequestAllowed(event, method, params);
     return bridge.request(method, params);
+  });
+  ipcMain.handle("m3:request-cancel", (event, previewRequestId) => {
+    if (!BrowserWindow.fromWebContents(event.sender)) throw new Error("IPC_SENDER_INVALID");
+    if (typeof previewRequestId !== "string" || !previewRequestId || previewRequestId.length > 200) {
+      throw new Error("IPC_CANCEL_REQUEST_INVALID");
+    }
+    return bridge.cancelPreview(previewRequestId);
   });
   ipcMain.handle("m3:pick-file", async (event, options = {}) => {
     if (!BrowserWindow.fromWebContents(event.sender)) throw new Error("IPC_SENDER_INVALID");

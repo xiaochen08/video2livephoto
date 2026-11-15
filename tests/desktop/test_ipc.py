@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import io
 import json
+import pytest
 import sys
+import threading
 import time
 from pathlib import Path
 
 from core.media.toolchain import Toolchain
+from core.media.process import CancellationToken
+from desktop.models import M3ProjectError
 from desktop.ipc_server import JsonlIpcServer, _configure_utf8_stdio
 
 
@@ -35,6 +39,154 @@ def test_ipc_run_echoes_request_id(monkeypatch) -> None:
     response = json.loads(stdout.getvalue())
     assert response["id"] == "renderer-1"
     assert response["ok"] is True
+
+
+def test_ipc_preview_cancel_is_read_while_decode_is_running(monkeypatch) -> None:
+    stdin = io.StringIO(
+        json.dumps(
+            {
+                "id": "preview-transport",
+                "protocol": "m3.ipc.v1",
+                "method": "preview.getFrame",
+                "params": {
+                    "preview_request_id": "preview-cancel-test",
+                    "project_id": "project",
+                    "frame": 0,
+                    "size": "thumb",
+                },
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "id": "cancel-transport",
+                "protocol": "m3.ipc.v1",
+                "method": "preview.cancel",
+                "params": {"preview_request_id": "preview-cancel-test"},
+            }
+        )
+        + "\n"
+    )
+    stdout = io.StringIO()
+    started = threading.Event()
+
+    class FakeService:
+        snapshot = type("Snapshot", (), {"project_id": "project"})()
+
+        def preview_frame(self, _index, *, width, token):
+            assert width == 320
+            started.set()
+            while not token.cancelled:
+                time.sleep(0.01)
+            raise M3ProjectError("CANCELLED", "帧预览已取消。")
+
+        def close(self):
+            return None
+
+    server = JsonlIpcServer()
+    server.service = FakeService()
+    monkeypatch.setattr(server, "_ensure_project", lambda _project_id, **_kwargs: server.service)
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    assert server.run() == 0
+    assert started.is_set()
+    responses = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    cancelled = next(item for item in responses if item.get("id") == "cancel-transport")
+    preview = next(item for item in responses if item.get("id") == "preview-transport")
+    assert cancelled["ok"] is True
+    assert cancelled["cancel_requested"] is True
+    assert preview["ok"] is False
+    assert preview["error"]["code"] == "CANCELLED"
+
+
+def test_ipc_preview_executor_is_hard_limited_to_two_workers(monkeypatch) -> None:
+    stdin = io.StringIO()
+    stdout = io.StringIO()
+    lock = threading.Lock()
+    started = threading.Event()
+    release = threading.Event()
+    active = 0
+    maximum = 0
+
+    class FakeService:
+        snapshot = type("Snapshot", (), {"project_id": "project"})()
+
+        def preview_frame(self, index, *, width, token):
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+                if active == 2:
+                    started.set()
+            release.wait(timeout=2)
+            with lock:
+                active -= 1
+            return {"data_uri": f"data:image/jpeg;base64,{index}", "pts": index}
+
+        def close(self):
+            return None
+
+    server = JsonlIpcServer()
+    server.service = FakeService()
+    monkeypatch.setattr(server, "_ensure_project", lambda _project_id, **_kwargs: server.service)
+    server._output_writer = stdout
+    requests = [
+        {
+            "id": f"transport-{index}",
+            "protocol": "m3.ipc.v1",
+            "method": "preview.getFrame",
+            "params": {
+                "preview_request_id": f"preview-{index}",
+                "project_id": "project",
+                "frame": index,
+                "size": "thumb",
+            },
+        }
+        for index in range(3)
+    ]
+    for request in requests:
+        server._submit_preview(request, None)
+    assert started.wait(timeout=2)
+    with lock:
+        assert maximum == 2
+    release.set()
+    deadline = time.monotonic() + 3
+    while len(stdout.getvalue().splitlines()) < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(stdout.getvalue().splitlines()) == 3
+    server._close_project()
+    server._preview_executor.shutdown(wait=True, cancel_futures=True)
+
+
+def test_async_preview_cannot_reopen_a_project_after_switch() -> None:
+    called = False
+
+    class CurrentService:
+        snapshot = type("Snapshot", (), {"project_id": "project-p2"})()
+
+        def preview_frame(self, _index, *, width, token):
+            nonlocal called
+            called = True
+            raise AssertionError("stale preview must not decode against the current project")
+
+    server = JsonlIpcServer()
+    server.service = CurrentService()
+    request = {
+        "id": "preview-old-project",
+        "protocol": "m3.ipc.v1",
+        "method": "preview.getFrame",
+        "params": {
+            "preview_request_id": "preview-old-project",
+            "project_id": "project-p1",
+            "frame": 1,
+            "size": "thumb",
+        },
+    }
+    with pytest.raises(M3ProjectError) as exc:
+        server.handle(request, _preview_token=CancellationToken())
+    assert exc.value.code == "PREVIEW_STALE"
+    assert called is False
+    server._preview_executor.shutdown(wait=True, cancel_futures=True)
 
 
 def test_ipc_protocol_ping_and_real_import(

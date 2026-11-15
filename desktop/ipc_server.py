@@ -91,6 +91,14 @@ class JsonlIpcServer:
         self._analysis_tasks: dict[str, dict[str, Any]] = {}
         self._analysis_by_request: dict[str, str] = {}
         self._analysis_epoch = 0
+        # Preview decoding is deliberately isolated from the synchronous JSONL
+        # request path.  The renderer also limits its own queue, but keeping a
+        # hard backend cap prevents direct/legacy callers from starting an
+        # unbounded number of ffmpeg processes.
+        self._preview_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="v2lp-preview")
+        self._preview_tasks: dict[str, dict[str, Any]] = {}
+        self._preview_lock = threading.RLock()
+        self._preview_generation = 0
         self._subscriptions: set[str] = set()
         self._batch_meta: dict[str, dict[str, Any]] = {}
         self._task_snapshots: dict[str, dict[str, Any]] = {}
@@ -102,6 +110,10 @@ class JsonlIpcServer:
         self._settings_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _close_project(self) -> None:
+        with self._preview_lock:
+            self._preview_generation += 1
+            for task in self._preview_tasks.values():
+                task["token"].cancel()
         if self.service is not None:
             log_event(self.logger, "project.close", project_path=str(self.project_path) if self.project_path else None) if self.logger else None
         self._stop_task_watcher()
@@ -691,7 +703,111 @@ class JsonlIpcServer:
         self.runner.pump()
         return {"ok": True, "batch_id": batch_id, "snapshot_id": snapshot_id, "deduplicated": all(job.attempt_count > 0 for job in jobs)}
 
-    def _handle_contract(self, request: dict[str, Any], method: str, params: dict[str, Any]) -> dict[str, Any] | None:
+    def _preview_request_id(self, request: dict[str, Any], params: dict[str, Any]) -> str:
+        request_id = str(
+            params.get("preview_request_id")
+            or params.get("request_id")
+            or request.get("id")
+            or ""
+        ).strip()
+        if not request_id:
+            raise M3ProjectError("PREVIEW_REQUEST_ID_MISSING", "预览请求缺少可取消的请求 ID。")
+        return request_id
+
+    def _write_response(self, response: dict[str, Any], request: dict[str, Any]) -> None:
+        if "id" in request:
+            response["id"] = request["id"]
+        writer = self._output_writer
+        if writer is None:
+            return
+        with self._output_lock:
+            writer.write(json.dumps(response, ensure_ascii=False) + "\n")
+            writer.flush()
+
+    def _submit_preview(self, request: dict[str, Any], request_logger: Any) -> None:
+        params = dict(request.get("params") or {})
+        preview_request_id = self._preview_request_id(request, params)
+        with self._preview_lock:
+            if preview_request_id in self._preview_tasks:
+                raise M3ProjectError("PREVIEW_DUPLICATE_REQUEST", "预览请求 ID 已在处理中。")
+            generation = self._preview_generation
+            token = CancellationToken()
+            started = time.perf_counter()
+            task: dict[str, Any] = {
+                "token": token,
+                "generation": generation,
+                "started": started,
+                "logger": request_logger,
+                "request": request,
+            }
+            future = self._preview_executor.submit(
+                self.handle, request, _preview_token=token
+            )
+            task["future"] = future
+            self._preview_tasks[preview_request_id] = task
+
+        def _complete(done: Future) -> None:
+            try:
+                if done.cancelled():
+                    raise M3ProjectError("CANCELLED", "帧预览已取消。")
+                response = done.result()
+                with self._preview_lock:
+                    current_generation = self._preview_generation
+                    task_generation = task["generation"]
+                if task_generation != current_generation:
+                    raise M3ProjectError("PREVIEW_STALE", "预览请求已过期，请重新读取当前项目。")
+            except Exception as exc:  # keep the JSONL worker alive
+                response = {
+                    "ok": False,
+                    "error": {
+                        "code": getattr(exc, "code", "IPC_ERROR"),
+                        "message": str(exc),
+                        "details": getattr(exc, "details", {}),
+                    },
+                }
+            self._write_response(response, request)
+            if request_logger:
+                log_event(
+                    request_logger,
+                    "ipc.request.end",
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                    ok=bool(response.get("ok")),
+                )
+            with self._preview_lock:
+                if self._preview_tasks.get(preview_request_id) is task:
+                    self._preview_tasks.pop(preview_request_id, None)
+
+        future.add_done_callback(_complete)
+
+    def _cancel_preview(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        preview_request_id = self._preview_request_id(request, params)
+        with self._preview_lock:
+            task = self._preview_tasks.get(preview_request_id)
+            if task is None:
+                return {
+                    "ok": True,
+                    "preview_request_id": preview_request_id,
+                    "cancel_requested": False,
+                    "already_finished": True,
+                }
+            task["token"].cancel()
+            future = task.get("future")
+            if isinstance(future, Future):
+                future.cancel()
+        return {
+            "ok": True,
+            "preview_request_id": preview_request_id,
+            "cancel_requested": True,
+        }
+
+    def _handle_contract(
+        self,
+        request: dict[str, Any],
+        method: str,
+        params: dict[str, Any],
+        *,
+        preview_token: CancellationToken | None = None,
+    ) -> dict[str, Any] | None:
         if method == "connect":
             return {"ok": True, "connection": self._contract_connection()}
         if method == "projects.listRecent":
@@ -777,10 +893,20 @@ class JsonlIpcServer:
             video = (media_info(service.snapshot).get("video_streams") or [{}])[0]
             audio = bool(media_info(service.snapshot).get("audio_streams"))
             return {"ok": True, "source": {"url": None, "kind": "none", "width": int(video.get("width", 0)), "height": int(video.get("height", 0)), "has_audio": audio, "note": "当前桌面桥接尚未注册安全媒体协议；可使用精确帧预览。"}}
+        if method == "preview.cancel":
+            return self._cancel_preview(request, params)
         if method == "preview.getFrame":
-            service = self._ensure_project(str(params.get("project_id") or ""))
+            project_id = str(params.get("project_id") or "")
+            if preview_token is not None:
+                if preview_token.cancelled:
+                    raise M3ProjectError("CANCELLED", "帧预览已取消。")
+                service = self.service
+                if service is None or service.snapshot.project_id != project_id:
+                    raise M3ProjectError("PREVIEW_STALE", "当前项目已切换，请重新读取预览。")
+            else:
+                service = self._ensure_project(project_id)
             index = int(params.get("frame", 0))
-            preview = service.preview_frame(index, width=320 if params.get("size") == "thumb" else 960)
+            preview = service.preview_frame(index, width=320 if params.get("size") == "thumb" else 960, token=preview_token)
             return {"ok": True, "frame": {"url": preview["data_uri"], "frame": index, "exact": True, "note": None, "pts": str(preview["pts"])}}
         if method == "preview.releaseFrame":
             return {"ok": True}
@@ -920,6 +1046,12 @@ class JsonlIpcServer:
                 if self.logger:
                     request_logger = self.logger.bind(request_id=request_id or None, method=method)
                     log_event(request_logger, "ipc.request.start", params=dict(request.get("params") or {}))
+                if method == "preview.getFrame":
+                    self._submit_preview(request, request_logger)
+                    # The worker callback writes the response after ffmpeg
+                    # exits.  Continuing here keeps the JSONL reader free to
+                    # accept preview.cancel and all unrelated IPC requests.
+                    continue
                 response = self.handle(request)
             except Exception as exc:  # keep the worker alive for the next request
                 if request_logger:
@@ -951,10 +1083,16 @@ class JsonlIpcServer:
                     ok=bool(response.get("ok")),
                 )
         self._close_project()
+        self._preview_executor.shutdown(wait=True, cancel_futures=True)
         self._analysis_executor.shutdown(wait=False, cancel_futures=False)
         return 0
 
-    def handle(self, request: dict[str, Any]) -> dict[str, Any]:
+    def handle(
+        self,
+        request: dict[str, Any],
+        *,
+        _preview_token: CancellationToken | None = None,
+    ) -> dict[str, Any]:
         if request.get("protocol", self.PROTOCOL) != self.PROTOCOL:
             raise M3ProjectError("IPC_VERSION_UNSUPPORTED", "IPC 协议版本不受支持。")
         method = str(request.get("method", ""))
@@ -964,7 +1102,9 @@ class JsonlIpcServer:
             return deepcopy(self._request_results[request_key])
         if method == "ping":
             return {"ok": True, "protocol": self.PROTOCOL, "service": "m3-python"}
-        contract_result = self._handle_contract(request, method, params)
+        contract_result = self._handle_contract(
+            request, method, params, preview_token=_preview_token
+        )
         if contract_result is not None:
             if request_key:
                 self._remember_result(request_key, contract_result)

@@ -4,11 +4,15 @@ import sqlite3
 import base64
 import subprocess
 import hashlib
+import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from core.media.toolchain import Toolchain
+from core.media.process import CancellationToken
 from desktop.models import AudioConflictError, M3ProjectError
 from desktop.service import M3ProjectService
 
@@ -111,6 +115,82 @@ def test_preview_frame_uses_exact_display_pts(
         assert hashlib.sha256(actual).hexdigest() == hashlib.sha256(result.stdout).hexdigest()
     finally:
         service.close()
+
+
+def test_preview_frame_kills_ffmpeg_when_cancelled(
+    small_mp4: Path,
+    ffmpeg_path: str,
+    ffprobe_path: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(small_mp4, ffmpeg_path, ffprobe_path, tmp_path)
+
+    class SlowProcess:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.started = threading.Event()
+            self.finished = threading.Event()
+            self.killed = False
+            self.returncode: int | None = None
+            self.started.set()
+
+        def communicate(self):
+            self.finished.wait(timeout=5)
+            return b"", b"cancelled"
+
+        def poll(self):
+            return None if not self.finished.is_set() else self.returncode
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+            self.finished.set()
+
+        def wait(self, timeout=None):
+            self.finished.wait(timeout=timeout)
+            return self.returncode
+
+        def terminate(self):
+            self.kill()
+
+    process: SlowProcess | None = None
+
+    def fake_popen(*args, **kwargs):
+        nonlocal process
+        process = SlowProcess(*args, **kwargs)
+        return process
+
+    monkeypatch.setattr("desktop.service.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(
+        service,
+        "frame_at",
+        lambda _index: SimpleNamespace(
+            best_effort_pts=0, pts=0, time_base_num=1, time_base_den=30
+        ),
+    )
+    token = CancellationToken()
+    result: list[BaseException] = []
+
+    def run_preview() -> None:
+        try:
+            service.preview_frame(0, width=320, token=token)
+        except BaseException as exc:  # assert the concrete cancellation below
+            result.append(exc)
+
+    worker = threading.Thread(target=run_preview)
+    worker.start()
+    deadline = time.monotonic() + 2
+    while process is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert process is not None
+    token.cancel()
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert process.killed is True
+    assert len(result) == 1
+    assert isinstance(result[0], M3ProjectError)
+    assert result[0].code == "CANCELLED"
+    service.close()
 
 
 def test_timeline_editing_undo_redo_and_contiguous_ranges(

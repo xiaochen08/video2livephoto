@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("m3", {
   request: (method, params = {}) => ipcRenderer.invoke("m3:request", method, params),
+  cancel: (previewRequestId) => ipcRenderer.invoke("m3:request-cancel", previewRequestId),
   pickFile: (options = {}) => ipcRenderer.invoke("m3:pick-file", options),
   pathForFile: (file) => {
     try {
