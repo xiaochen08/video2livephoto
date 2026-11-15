@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
 
-from core.queue import QueueRunner, QueueStore
+from core.commit.transaction import CommitError, recover_transaction
+from core.queue import QueueRunner, QueueState, QueueStore, compute_snapshot_hash
 
 from .export_pipeline import export_queue_job
 from .models import M3ProjectError
@@ -41,6 +44,19 @@ class JsonlIpcServer:
         self.queue_store = QueueStore(self.project_path.with_suffix(".queue.sqlite3"))
         self.queue_store.mark_interrupted_for_restart()
         assert self.service is not None
+
+        def promote_after_success(_job, _result) -> int:
+            # Start conservatively with one encoder.  A second worker is only
+            # admitted after a completed job and a capacity check showing at
+            # least four logical CPUs and 8 GiB free on the export volume.
+            # This keeps the hard limit at two while avoiding an unmeasured
+            # burst on small Windows machines.
+            try:
+                free_bytes = shutil.disk_usage(self.project_path.parent).free
+            except OSError:
+                return 1
+            return 2 if (os.cpu_count() or 1) >= 4 and free_bytes >= 8 * 1024**3 else 1
+
         self.runner = QueueRunner(
             self.queue_store,
             lambda job, cancel, report: export_queue_job(
@@ -49,7 +65,9 @@ class JsonlIpcServer:
                 report,
                 toolchain=self.service.toolchain,
             ),
-            max_workers=1,
+            max_workers=2,
+            initial_workers=1,
+            on_job_succeeded=promote_after_success,
         )
 
     @staticmethod
@@ -183,6 +201,14 @@ class JsonlIpcServer:
                     "output_dir": str(output_dir),
                     "color_mode": params.get("color_mode", "warn"),
                 }
+                snapshot_hash = compute_snapshot_hash(job_snapshot)
+                existing = self.queue_store.find_by_snapshot_hash(snapshot_hash)
+                if existing:
+                    # The same immutable snapshot may be submitted repeatedly
+                    # from a double click or a renderer retry.  Return the
+                    # durable job instead of creating competing workers.
+                    jobs.append(existing[0])
+                    continue
                 jobs.append(
                     self.queue_store.enqueue(
                         clip_id=str(segment["clip_id"]),
@@ -204,6 +230,7 @@ class JsonlIpcServer:
             return {
                 "ok": True,
                 "jobs": [self._job_dict(job) for job in self.queue_store.list()],
+                "worker_limit": self.runner.worker_limit if self.runner else 0,
             }
         elif method == "pause_export":
             if self.runner is None:
@@ -215,6 +242,44 @@ class JsonlIpcServer:
                 raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
             self.runner.resume()
             return {"ok": True}
+        elif method == "confirm_recovery":
+            if self.queue_store is None or self.runner is None:
+                raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
+            requested = [str(item) for item in params.get("job_ids", [])]
+            if not requested:
+                requested = [
+                    job.job_id
+                    for job in self.queue_store.list(states=[QueueState.INTERRUPTED])
+                    if job.user_confirmation_required
+                ]
+            transaction_states: dict[str, str] = {}
+            for job_id in requested:
+                job = self.queue_store.get(job_id)
+                if job.state != QueueState.INTERRUPTED:
+                    raise M3ProjectError(
+                        "RECOVERY_NOT_REQUIRED", f"任务 {job_id} 当前不需要恢复确认。"
+                    )
+                manifest = (
+                    Path(job.temp_dir or "")
+                    / (job.transaction_id or job.job_id)
+                    / "transaction.json"
+                )
+                if manifest.is_file():
+                    try:
+                        transaction_states[job_id] = recover_transaction(manifest)
+                    except CommitError as exc:
+                        raise M3ProjectError(
+                            "RECOVERY_FAILED",
+                            str(exc),
+                            details={"job_id": job_id, "code": exc.code},
+                        ) from exc
+            recovered = self.queue_store.confirm_recovery(requested)
+            self.runner.pump()
+            return {
+                "ok": True,
+                "transactions": transaction_states,
+                "jobs": [self._job_dict(job) for job in recovered],
+            }
         elif method == "cancel_export":
             if self.runner is None:
                 raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")

@@ -15,7 +15,11 @@ from typing import Iterable, Sequence
 from core.media.errors import MediaError
 from core.media.process import CancellationToken, kill_process
 from core.media.probe import probe_media
-from core.media.source_identity import capture_identity, identities_match
+from core.media.source_identity import (
+    capture_identity,
+    identities_match,
+    paths_refer_same_file,
+)
 from core.media.toolchain import Toolchain, process_creation_flags
 from core.protocol.media import FrameRef, Rational, SourceIdentity
 
@@ -350,6 +354,15 @@ def encode_segment(
     destination = Path(output_path)
     toolchain = toolchain or Toolchain.discover()
     token = token or CancellationToken()
+    if paths_refer_same_file(source, destination):
+        raise MediaError(
+            code="PATH_CONFLICT",
+            stage="encode",
+            path=str(source),
+            stream_index=None,
+            retryable=False,
+            message="编码输出路径不能与源文件相同",
+        )
     source_identity = capture_identity(source)
     frame_list = tuple(frames)
     selected, first, last, frame_count, stream_index = _validate_frame_range(

@@ -122,6 +122,34 @@ def test_encode_silent_segment_has_no_audio_stream(
     assert result.validation["audio_stream_count"] == 0
 
 
+def test_encode_rejects_source_as_output_and_preserves_source(
+    small_mp4: Path,
+    ffmpeg_path: str,
+    ffprobe_path: str,
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    index = build_frame_index(
+        small_mp4, cache_root=tmp_path / "index", toolchain=toolchain
+    )
+    before = hashlib.sha256(small_mp4.read_bytes()).hexdigest()
+    with pytest.raises(MediaError) as exc:
+        encode_segment(
+            small_mp4,
+            _frames(index),
+            start_display_index=0,
+            end_display_index=min(index.frame_count, 2),
+            output_path=small_mp4,
+            toolchain=toolchain,
+            color_mode="warn",
+            prefer_gpu=False,
+        )
+    assert exc.value.code == "PATH_CONFLICT"
+    assert hashlib.sha256(small_mp4.read_bytes()).hexdigest() == before
+
+
 def test_encode_rejects_unknown_color_metadata_by_default(
     small_mp4: Path,
     ffmpeg_path: str,

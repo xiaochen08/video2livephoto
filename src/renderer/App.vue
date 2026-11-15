@@ -11,6 +11,15 @@ type Project = {
   pending_review_count: number;
   can_export: boolean;
 };
+type ExportJob = {
+  job_id: string;
+  clip_id: string;
+  state: string;
+  progress: number;
+  phase?: string;
+  user_confirmation_required?: boolean;
+  error_message?: string | null;
+};
 
 const sourcePath = ref("");
 const projectPath = ref("");
@@ -22,6 +31,7 @@ const selectedCutId = ref("");
 const selectedClipId = ref("");
 const message = ref("先导入一条本地视频；M3 不会自动导出。\n");
 const busy = ref(false);
+const exportJobs = ref<ExportJob[]>([]);
 
 const selectedCut = computed(() => project.value?.cuts.find((cut) => cut.cut_id === selectedCutId.value));
 const selectedClip = computed(() => project.value?.segments.find((clip) => clip.clip_id === selectedClipId.value));
@@ -54,6 +64,7 @@ async function importProject() {
     return;
   }
   await call("import", { source_path: sourcePath.value, project_path: projectPath.value });
+  await refreshQueue();
   center.value = 0;
   await loadWindow();
   message.value = "已通过 M1 完成真实探测与显示帧索引。请审核切点后再确认导出。\n";
@@ -62,6 +73,7 @@ async function importProject() {
 async function openProject() {
   if (!projectPath.value) return;
   await call("open", { project_path: projectPath.value });
+  await refreshQueue();
   await loadWindow();
   message.value = "项目已重开；源文件身份已重新核对。\n";
 }
@@ -116,6 +128,30 @@ async function markChecked(cut: Project["cuts"][number]) {
 async function undo() { await call("undo"); await loadWindow(); }
 async function redo() { await call("redo"); await loadWindow(); }
 
+async function refreshQueue() {
+  if (!project.value) return;
+  const result = await call("export_status");
+  exportJobs.value = result.jobs || [];
+}
+
+async function confirmRecovery() {
+  const ids = exportJobs.value
+    .filter((job) => job.user_confirmation_required)
+    .map((job) => job.job_id);
+  if (!ids.length) return;
+  if (!window.confirm("程序上次退出时有未完成任务。确认后将恢复事务并继续本地导出？")) return;
+  await call("confirm_recovery", { job_ids: ids });
+  await refreshQueue();
+}
+
+async function pauseExport() { await call("pause_export"); await refreshQueue(); }
+async function resumeExport() { await call("resume_export"); await refreshQueue(); }
+async function cancelExport(job: ExportJob) {
+  if (!window.confirm(`确认取消任务 ${job.clip_id}？`)) return;
+  await call("cancel_export", { job_id: job.job_id });
+  await refreshQueue();
+}
+
 async function confirmExport() {
   let allow = false;
   if (project.value?.pending_review_count) {
@@ -123,6 +159,7 @@ async function confirmExport() {
     if (!allow) return;
   }
   const result = await call("start_export", { allow_unreviewed: allow });
+  exportJobs.value = result.jobs || [];
   message.value = `已确认导出并加入本地队列（${result.jobs.length} 个片段）。编码、校验和安全提交已开始，源视频保持只读。\n`;
 }
 </script>
@@ -147,9 +184,12 @@ async function confirmExport() {
         <div class="metric"><strong>{{ project.segments.length }}</strong><span>片段</span></div>
         <div class="metric warn"><strong>{{ project.pending_review_count }}</strong><span>待检查切点</span></div>
         <h3>待检查列表</h3>
-        <button v-for="cut in project.cuts.filter((item) => item.needs_review)" :key="cut.cut_id" class="review-item" :class="{ selected: cut.cut_id === selectedCutId }" @click="selectedCutId = cut.cut_id; center = cut.boundary_index; loadWindow()">
-          帧 {{ cut.boundary_index }} · {{ cut.checked ? "已检查" : "待检查" }}
-        </button>
+        <div v-for="cut in project.cuts.filter((item) => item.needs_review)" :key="cut.cut_id" class="review-row">
+          <button class="review-item" :class="{ selected: cut.cut_id === selectedCutId }" @click="selectedCutId = cut.cut_id; center = cut.boundary_index; loadWindow()">
+            帧 {{ cut.boundary_index }} · {{ cut.checked ? "已检查" : "待检查" }}
+          </button>
+          <button class="secondary review-check" @click="markChecked(cut)">{{ cut.checked ? "恢复待查" : "标记已查" }}</button>
+        </div>
       </aside>
       <section class="canvas">
         <div class="preview-card">
@@ -162,7 +202,7 @@ async function confirmExport() {
         <div class="toolbar"><button @click="addCut">在当前帧增加切点</button><button :disabled="!selectedCut" @click="moveCut(-1)">切点 ←</button><button :disabled="!selectedCut" @click="moveCut(1)">切点 →</button><button :disabled="!selectedCut" @click="deleteCut">删除切点</button><button :disabled="!selectedClip" @click="mergeSelected">合并相邻片段</button><button @click="undo">撤销</button><button @click="redo">重做</button></div>
         <div class="timeline"><div v-for="segment in project.segments" :key="segment.clip_id" class="segment" :class="{ selected: segment.clip_id === selectedClipId }" @click="selectedClipId = segment.clip_id"><span>片段 {{ segment.output_number }}</span><strong>{{ segment.start_index }}–{{ segment.end_index }}</strong><small>{{ segment.end_index - segment.start_index }} 帧 · {{ segment.audio_enabled ? "保留音频" : "静音" }}</small></div></div>
       </section>
-      <aside class="inspector"><div class="rail-title">片段设置</div><template v-if="selectedClip"><p><b>clip_id</b><br /><code>{{ selectedClip.clip_id }}</code></p><p><b>范围</b> {{ selectedClip.start_index }}–{{ selectedClip.end_index }}</p><button @click="toggleClipAudio">{{ selectedClip.audio_enabled ? "设为静音" : "恢复音频" }}</button><button class="secondary" @click="muteAll">全部静音</button></template><p v-else class="muted">点击时间线片段查看设置。</p><hr /><button class="primary" @click="confirmExport">确认并开始导出</button><p class="muted">确认后进入本地队列；失败、暂停和恢复由任务状态控制。</p></aside>
+      <aside class="inspector"><div class="rail-title">片段设置</div><template v-if="selectedClip"><p><b>clip_id</b><br /><code>{{ selectedClip.clip_id }}</code></p><p><b>范围</b> {{ selectedClip.start_index }}–{{ selectedClip.end_index }}</p><button @click="toggleClipAudio">{{ selectedClip.audio_enabled ? "设为静音" : "恢复音频" }}</button><button class="secondary" @click="muteAll">全部静音</button></template><p v-else class="muted">点击时间线片段查看设置。</p><hr /><button class="primary" @click="confirmExport">确认并开始导出</button><p class="muted">确认后进入本地队列；失败、暂停和恢复由任务状态控制。</p><section class="queue-panel"><div class="rail-title">导出队列</div><button class="secondary" @click="refreshQueue">刷新状态</button><button v-if="exportJobs.some((job) => job.user_confirmation_required)" class="primary" @click="confirmRecovery">确认恢复未完成任务</button><div class="queue-actions"><button @click="pauseExport">暂停领取</button><button @click="resumeExport">继续领取</button></div><div v-for="job in exportJobs" :key="job.job_id" class="queue-job"><strong>{{ job.clip_id }}</strong><span>{{ job.state }} · {{ Math.round(job.progress * 100) }}%</span><small v-if="job.phase">{{ job.phase }}</small><button v-if="['pending','processing','validating','committing'].includes(job.state)" class="secondary" @click="cancelExport(job)">取消</button><p v-if="job.error_message" class="muted">{{ job.error_message }}</p></div><p v-if="!exportJobs.length" class="muted">尚未建立导出任务。</p></section></aside>
     </section>
     <pre class="log">{{ message }}</pre>
   </main>

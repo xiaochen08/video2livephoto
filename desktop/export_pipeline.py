@@ -9,7 +9,7 @@ from core.livephoto.pack import pack_live_photo
 from core.media.encode import encode_segment
 from core.media.process import CancellationToken
 from core.media.toolchain import Toolchain
-from core.protocol.media import FrameRef, Rational
+from core.protocol.media import FrameRef, Rational, SourceIdentity
 from core.queue.store import QueueJob
 
 
@@ -53,10 +53,22 @@ def export_queue_job(
     start = int(segment["start_index"])
     end = int(segment["end_index"])
     temp_root = Path(job.temp_dir or snapshot["temp_root"]).resolve()
+    source_identity = None
+    if job.source_identity:
+        source_identity = SourceIdentity(
+            canonical_path=str(job.source_identity["canonical_path"]),
+            physical_file_id=job.source_identity.get("physical_file_id"),
+            size=int(job.source_identity["size"]),
+            mtime_ns=int(job.source_identity["mtime_ns"]),
+            sampled_fingerprint=str(job.source_identity["sampled_fingerprint"]),
+            full_sha256=job.source_identity.get("full_sha256"),
+            captured_at_utc=str(job.source_identity.get("captured_at_utc", "")),
+        )
     transaction = CommitTransaction(
         target_dir=Path(job.output_dir or snapshot["output_dir"]).resolve(),
         transaction_root=temp_root,
         source_path=source,
+        source_identity=source_identity,
         transaction_id=job.job_id,
     )
     stage = transaction.work_dir / "staged"

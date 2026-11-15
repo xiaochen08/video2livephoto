@@ -265,6 +265,20 @@ def probe_media(
             message="媒体中没有可用视频流",
         )
     defaults = tuple(item for item in videos if item.disposition.get("default", 0) == 1)
+    if len(defaults) > 1:
+        raise MediaError(
+            code="AMBIGUOUS_VIDEO_STREAM",
+            stage="probe",
+            path=str(source),
+            stream_index=None,
+            retryable=False,
+            message="媒体包含多个默认视频流，无法安全确定主视频",
+            diagnostics={
+                "candidate_streams": [item.index for item in videos],
+                "default_streams": [item.index for item in defaults],
+                "attached_picture_streams": [item.index for item in attached_pictures],
+            },
+        )
     candidates = defaults or videos
     selected = min(candidates, key=lambda item: item.index)
     reason = "default_disposition" if defaults else "lowest_stream_index"

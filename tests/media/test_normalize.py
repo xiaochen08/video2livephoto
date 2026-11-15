@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from core.media.errors import MediaError
-from core.media.normalize import normalize_fragmented
+from core.media.normalize import _read_audio_packets, normalize_fragmented
+from core.media.process import CancellationToken
 from core.media.toolchain import Toolchain
 
 
@@ -81,3 +82,18 @@ def test_normalize_cache_root_file_returns_structured_unavailable_error(
         )
     assert exc.value.code == "CACHE_PATH_UNAVAILABLE"
     assert exc.value.diagnostics["reason"] == "not_directory"
+
+
+def test_audio_packet_probe_honors_cancellation(
+    fragmented_av_mp4: Path, ffmpeg_path: str, ffprobe_path: str
+) -> None:
+    token = CancellationToken()
+    token.cancel()
+    with pytest.raises(MediaError) as exc:
+        _read_audio_packets(
+            fragmented_av_mp4,
+            Toolchain.from_paths(ffmpeg_path, ffprobe_path),
+            30.0,
+            token,
+        )
+    assert exc.value.code == "CANCELLED"

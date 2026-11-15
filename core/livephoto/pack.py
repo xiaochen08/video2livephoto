@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -9,6 +10,7 @@ import threading
 import time
 import uuid as uuidlib
 from dataclasses import asdict, dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -289,6 +291,55 @@ def _validate_pair(
     except (TypeError, ValueError):
         pass
     frames = payload.get("frames") or []
+    if not math.isfinite(still_image_time_seconds) or still_image_time_seconds < 0:
+        raise MediaError(
+            code="INVALID_STILL_IMAGE_TIME",
+            stage="livephoto",
+            path=str(mov_path),
+            stream_index=None,
+            retryable=False,
+            message="still-image-time 必须是非负有限秒数",
+        )
+    if duration is not None and still_image_time_seconds > duration + 1e-6:
+        raise MediaError(
+            code="STILL_IMAGE_TIME_OUT_OF_RANGE",
+            stage="livephoto",
+            path=str(mov_path),
+            stream_index=None,
+            retryable=False,
+            message="still-image-time 超出 MOV 时长",
+            diagnostics={
+                "still_image_time_seconds": still_image_time_seconds,
+                "duration_seconds": duration,
+            },
+        )
+    stream_time_base = streams[0].get("time_base") if streams else None
+    frame_times: list[float] = []
+    if isinstance(stream_time_base, str) and "/" in stream_time_base:
+        try:
+            num, den = stream_time_base.split("/", 1)
+            time_base = Fraction(int(num), int(den))
+            for frame in frames:
+                raw_pts = frame.get("best_effort_timestamp", frame.get("pts"))
+                if raw_pts is not None:
+                    frame_times.append(float(int(raw_pts) * time_base))
+        except (ValueError, ZeroDivisionError):
+            frame_times = []
+    if not frame_times or not any(
+        abs(value - still_image_time_seconds) <= 1e-6 for value in frame_times
+    ):
+        raise MediaError(
+            code="STILL_IMAGE_TIME_NOT_A_FRAME",
+            stage="livephoto",
+            path=str(mov_path),
+            stream_index=None,
+            retryable=False,
+            message="still-image-time 未对齐到 MOV 的显示帧时间戳",
+            diagnostics={
+                "still_image_time_seconds": still_image_time_seconds,
+                "frame_times_preview": frame_times[:8],
+            },
+        )
     return {
         "jpg_makernote_uuid": jpg_id,
         "mov_content_identifier": content_id,

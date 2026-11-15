@@ -30,12 +30,27 @@ Worker = Callable[
 class QueueRunner:
     """Small durable scheduler with a hard upper bound of two workers."""
 
-    def __init__(self, store: QueueStore, worker: Worker, *, max_workers: int = 1):
+    def __init__(
+        self,
+        store: QueueStore,
+        worker: Worker,
+        *,
+        max_workers: int = 1,
+        initial_workers: int | None = None,
+        on_job_succeeded: Callable[[QueueJob, dict[str, Any] | None], int | None]
+        | None = None,
+    ):
         if max_workers not in (1, 2):
             raise ValueError("M6 allows one or two concurrent export workers")
+        if initial_workers is None:
+            initial_workers = max_workers
+        if initial_workers not in (1, 2) or initial_workers > max_workers:
+            raise ValueError("initial_workers must be between one and max_workers")
         self.store = store
         self.worker = worker
         self.max_workers = max_workers
+        self._worker_limit = initial_workers
+        self._on_job_succeeded = on_job_succeeded
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="v1-export"
         )
@@ -48,6 +63,19 @@ class QueueRunner:
     def running_job_ids(self) -> tuple[str, ...]:
         with self._lock:
             return tuple(self._running)
+
+    @property
+    def worker_limit(self) -> int:
+        with self._lock:
+            return self._worker_limit
+
+    def set_worker_limit(self, worker_limit: int) -> int:
+        if worker_limit not in (1, 2) or worker_limit > self.max_workers:
+            raise ValueError("worker_limit must be between one and max_workers")
+        with self._lock:
+            self._worker_limit = worker_limit
+        self.pump()
+        return worker_limit
 
     def _report(self, job_id: str, progress: float, phase: str | None) -> None:
         try:
@@ -119,13 +147,22 @@ class QueueRunner:
                 )
             except Exception:
                 pass
+        if self._on_job_succeeded is not None:
+            try:
+                new_limit = self._on_job_succeeded(job, result)
+                if new_limit is not None:
+                    self.set_worker_limit(new_limit)
+            except Exception:
+                # A capacity probe must never turn a completed export into a
+                # failed queue state.
+                pass
         self.pump()
 
     def pump(self) -> tuple[str, ...]:
         with self._lock:
             if self._paused or self._closed:
                 return self.running_job_ids
-            while len(self._running) < self.max_workers:
+            while len(self._running) < self._worker_limit:
                 job = self.store.claim(worker_pid=os.getpid())
                 if job is None:
                     break

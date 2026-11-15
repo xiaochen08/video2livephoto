@@ -74,3 +74,29 @@ def test_source_change_is_rejected(tmp_path):
         assert exc.code == "SOURCE_CHANGED"
     else:
         raise AssertionError("changed source was accepted")
+
+
+def test_recovery_restores_backup_from_committing_journal(tmp_path):
+    target = tmp_path / "output"
+    target.mkdir()
+    old = target / "clip.mp4"
+    old.write_bytes(b"old")
+    tx = CommitTransaction(
+        target_dir=target, transaction_root=tmp_path / "transactions"
+    )
+    tx.backup_dir.mkdir(parents=True)
+    backup = tx.backup_dir / "clip.mp4"
+    old.replace(backup)
+    record = {
+        "temporary_path": str(tx.work_dir / "clip.mp4"),
+        "relative_target": "clip.mp4",
+        "size": 3,
+        "sha256": "new-output-hash",
+        "target_path": str(old),
+        "backup_path": str(backup),
+    }
+    tx._write_journal(state="committing", artifacts=[record], files=[record])
+
+    assert recover_transaction(tx.manifest_path) == "rolled_back"
+    assert old.read_bytes() == b"old"
+    assert not backup.exists()

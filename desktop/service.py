@@ -213,7 +213,6 @@ class M3ProjectService:
             raise M3ProjectError(
                 "FRAME_TIMESTAMP_UNAVAILABLE", "当前帧缺少可用时间戳。"
             )
-        seconds = timestamp * frame.time_base_num / frame.time_base_den
         width = max(160, min(int(width), 1280))
         result = subprocess.run(
             [
@@ -221,14 +220,20 @@ class M3ProjectService:
                 "-hide_banner",
                 "-loglevel",
                 "error",
-                "-ss",
-                f"{seconds:.12f}",
+                "-copyts",
                 "-i",
                 self.snapshot.source_path,
+                "-map",
+                "0:v:0",
+                "-an",
+                "-sn",
+                "-dn",
                 "-frames:v",
                 "1",
                 "-vf",
-                f"scale={width}:-2",
+                f"select='eq(pts\\,{timestamp})',scale={width}:-2",
+                "-vsync",
+                "0",
                 "-q:v",
                 "3",
                 "-f",

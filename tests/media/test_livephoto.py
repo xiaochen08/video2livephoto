@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from core.livephoto.pack import pack_live_photo
+from core.media.errors import MediaError
 from core.media.encode import encode_segment
 from core.media.frame_index import build_frame_index
 from core.media.toolchain import Toolchain
@@ -51,3 +52,38 @@ def test_livephoto_pair_has_matching_uuid_hashes_and_local_validation(
     loaded = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
     assert loaded["jpg_sha256"] == manifest.jpg_sha256
     assert loaded["mov_sha256"] == manifest.mov_sha256
+
+
+def test_livephoto_rejects_still_time_outside_video(
+    small_mp4: Path,
+    ffmpeg_path: str,
+    ffprobe_path: str,
+    tmp_path: Path,
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    index = build_frame_index(
+        small_mp4, cache_root=tmp_path / "index", toolchain=toolchain
+    )
+    segment = tmp_path / "segment.mp4"
+    encode_segment(
+        small_mp4,
+        _frames(index),
+        start_display_index=0,
+        end_display_index=min(index.frame_count, 12),
+        output_path=segment,
+        toolchain=toolchain,
+        color_mode="warn",
+        prefer_gpu=False,
+    )
+    try:
+        pack_live_photo(
+            segment,
+            output_dir=tmp_path / "LivePhoto",
+            clip_id="out-of-range",
+            still_image_time_seconds=999.0,
+            toolchain=toolchain,
+        )
+    except MediaError as exc:
+        assert exc.code == "STILL_IMAGE_TIME_OUT_OF_RANGE"
+    else:
+        raise AssertionError("out-of-range still-image-time must be rejected")

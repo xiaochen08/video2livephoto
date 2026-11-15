@@ -74,3 +74,40 @@ def test_runner_never_exceeds_two_workers(tmp_path):
     assert peak == 2
     assert all(store.get(job.job_id).state == QueueState.SUCCEEDED for job in jobs)
     runner.close(cancel_running=False)
+
+
+def test_runner_can_promote_from_one_to_two_after_success(tmp_path):
+    store = QueueStore(tmp_path / "queue.sqlite3")
+    jobs = [store.enqueue(clip_id=str(i), snapshot={"n": i}) for i in range(3)]
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def worker(_job, _cancel, report):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        report(0.5, "encoding")
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        return {}
+
+    def promote(_job, _result):
+        return 2
+
+    runner = QueueRunner(
+        store,
+        worker,
+        max_workers=2,
+        initial_workers=1,
+        on_job_succeeded=promote,
+    )
+    assert runner.worker_limit == 1
+    runner.pump()
+    runner.wait(timeout=5)
+    assert runner.worker_limit == 2
+    assert peak == 2
+    assert all(store.get(job.job_id).state == QueueState.SUCCEEDED for job in jobs)
+    runner.close(cancel_running=False)

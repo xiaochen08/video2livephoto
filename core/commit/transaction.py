@@ -215,22 +215,32 @@ class CommitTransaction:
         try:
             self.target_dir.mkdir(parents=True, exist_ok=True)
             self.backup_dir.mkdir(parents=True, exist_ok=True)
+            planned: list[dict[str, Any]] = []
             for record in records:
                 relative = Path(record["relative_target"])
                 target = self.target_dir / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 backup = self.backup_dir / relative
-                if target.exists():
-                    backup.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(target, backup)
-                committed.append(
+                planned.append(
                     {
                         **record,
                         "target_path": str(target),
-                        "backup_path": str(backup) if backup.exists() else None,
+                        "backup_path": str(backup) if target.exists() else None,
                     }
                 )
-            self._write_journal(state="committing", artifacts=records, files=committed)
+            # Persist the complete recovery plan before moving the first old
+            # output.  A crash between the first backup move and this journal
+            # write would otherwise leave a ``verified`` journal with no file
+            # records and make recovery unable to restore the old output.
+            self._write_journal(state="committing", artifacts=records, files=planned)
+            for record in planned:
+                target = Path(record["target_path"])
+                backup_name = record.get("backup_path")
+                backup = Path(backup_name) if backup_name else None
+                if backup and target.exists():
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(target, backup)
+                committed.append(record)
             for record in committed:
                 os.replace(record["temporary_path"], record["target_path"])
             self._verify_source()

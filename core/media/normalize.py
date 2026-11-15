@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -10,7 +11,7 @@ from core.media.errors import MediaError
 from core.media.fragment_inspector import inspect_fragments
 from core.media.frame_index import build_frame_index
 from core.media.probe import probe_media
-from core.media.process import CancellationToken
+from core.media.process import CancellationToken, kill_process
 from core.media.source_identity import (
     capture_identity,
     identities_match,
@@ -47,10 +48,15 @@ def _read_pts(index_path: str | None) -> list[int | None]:
 
 
 def _read_audio_packets(
-    path: Path, toolchain: Toolchain, timeout_seconds: float
+    path: Path,
+    toolchain: Toolchain,
+    timeout_seconds: float,
+    token: CancellationToken | None = None,
 ) -> dict[int, list[tuple[int | None, int | None, int | None]]]:
+    token = token or CancellationToken()
+    process: subprocess.Popen[str] | None = None
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             [
                 toolchain.ffprobe.path,
                 "-v",
@@ -65,24 +71,13 @@ def _read_audio_packets(
                 str(path),
             ],
             shell=False,
-            check=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout_seconds,
             creationflags=process_creation_flags(),
         )
-    except subprocess.TimeoutExpired as exc:
-        raise MediaError(
-            code="FFPROBE_TIMEOUT",
-            stage="normalize",
-            path=str(path),
-            stream_index=None,
-            retryable=True,
-            message="读取音频包时间轴超时",
-            diagnostics={"timeout_seconds": timeout_seconds},
-        ) from exc
     except OSError as exc:
         raise MediaError(
             code="FFPROBE_FAILED",
@@ -93,7 +88,49 @@ def _read_audio_packets(
             message="无法启动用于音频时间轴校验的 ffprobe",
             diagnostics={"error": str(exc)},
         ) from exc
-    if result.returncode != 0:
+    started = time.monotonic()
+    result: dict[str, str] = {}
+
+    def communicate() -> None:
+        stdout, stderr = process.communicate()
+        result["stdout"], result["stderr"] = stdout, stderr
+
+    reader = threading.Thread(target=communicate, daemon=True)
+    reader.start()
+    try:
+        while reader.is_alive():
+            if token.cancelled:
+                kill_process(process)
+                reader.join(timeout=2)
+                raise MediaError(
+                    code="CANCELLED",
+                    stage="normalize",
+                    path=str(path),
+                    stream_index=None,
+                    retryable=True,
+                    message="读取音频包时间轴已取消",
+                )
+            if time.monotonic() - started > timeout_seconds:
+                kill_process(process)
+                reader.join(timeout=2)
+                raise MediaError(
+                    code="FFPROBE_TIMEOUT",
+                    stage="normalize",
+                    path=str(path),
+                    stream_index=None,
+                    retryable=True,
+                    message="读取音频包时间轴超时",
+                    diagnostics={"timeout_seconds": timeout_seconds},
+                )
+            time.sleep(0.05)
+        reader.join(timeout=1)
+    finally:
+        if process.poll() is None:
+            kill_process(process)
+        reader.join(timeout=2)
+    stdout = result.get("stdout", "")
+    stderr = result.get("stderr", "")
+    if process.returncode != 0:
         raise MediaError(
             code="FFPROBE_FAILED",
             stage="normalize",
@@ -102,12 +139,12 @@ def _read_audio_packets(
             retryable=False,
             message="无法读取规范化校验所需的音频包时间轴",
             diagnostics={
-                "returncode": result.returncode,
-                "stderr": result.stderr[-4000:],
+                "returncode": process.returncode,
+                "stderr": stderr[-4000:],
             },
         )
     packets: dict[int, list[tuple[int | None, int | None, int | None]]] = {}
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines():
         fields = {
             key: value
             for token in line.split("|")
@@ -326,7 +363,7 @@ def normalize_fragmented(
         timeout_seconds=timeout_seconds,
     )
     source_audio_packets = _read_audio_packets(
-        source, toolchain, min(timeout_seconds, 120.0)
+        source, toolchain, min(timeout_seconds, 120.0), token
     )
     args = [
         toolchain.ffmpeg.path,
@@ -441,7 +478,7 @@ def normalize_fragmented(
             timeout_seconds=timeout_seconds,
         )
         output_audio_packets = _read_audio_packets(
-            partial, toolchain, min(timeout_seconds, 120.0)
+            partial, toolchain, min(timeout_seconds, 120.0), token
         )
         audio_timeline = _compare_audio_packets(
             source_audio_packets, output_audio_packets

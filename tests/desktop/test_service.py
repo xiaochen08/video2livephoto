@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+import base64
+import subprocess
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -56,6 +59,56 @@ def test_import_runs_m2_and_decodes_bounded_preview(
         preview = service.preview_frame(0, width=320)
         assert preview["mime"] == "image/jpeg"
         assert preview["data_uri"].startswith("data:image/jpeg;base64,")
+    finally:
+        service.close()
+
+
+def test_preview_frame_uses_exact_display_pts(
+    small_mp4: Path,
+    ffmpeg_path: str,
+    ffprobe_path: str,
+    tmp_path: Path,
+) -> None:
+    service = _service(small_mp4, ffmpeg_path, ffprobe_path, tmp_path)
+    try:
+        frame = service.frame_at(7)
+        timestamp = frame.best_effort_pts if frame.best_effort_pts is not None else frame.pts
+        assert timestamp is not None
+        preview = service.preview_frame(7, width=320)
+        actual = base64.b64decode(preview["data_uri"].split(",", 1)[1])
+        result = subprocess.run(
+            [
+                ffmpeg_path,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-copyts",
+                "-i",
+                str(small_mp4),
+                "-map",
+                "0:v:0",
+                "-an",
+                "-sn",
+                "-dn",
+                "-frames:v",
+                "1",
+                "-vf",
+                f"select='eq(pts\\,{timestamp})',scale=320:-2",
+                "-vsync",
+                "0",
+                "-q:v",
+                "3",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "mjpeg",
+                "pipe:1",
+            ],
+            check=False,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        assert hashlib.sha256(actual).hexdigest() == hashlib.sha256(result.stdout).hexdigest()
     finally:
         service.close()
 

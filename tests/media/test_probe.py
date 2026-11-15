@@ -108,7 +108,7 @@ def test_probe_excludes_attached_picture_from_primary_video_selection(
             "-disposition:v:0",
             "default",
             "-disposition:v:1",
-            "default",
+            "0",
             "-disposition:v:2",
             "attached_pic",
             "-metadata:s:v:2",
@@ -122,4 +122,56 @@ def test_probe_excludes_attached_picture_from_primary_video_selection(
     )
     assert result.selected_video_stream == 0
     assert [stream.index for stream in result.attached_picture_streams] == [2]
-    assert any("multiple video streams" in item for item in result.diagnostics)
+    assert not any("multiple video streams" in item for item in result.diagnostics)
+
+
+def test_probe_rejects_multiple_default_video_streams(
+    ffmpeg_path: str, ffprobe_path: str, tmp_path: Path
+) -> None:
+    sample = tmp_path / "ambiguous-default-videos.mp4"
+    import subprocess
+
+    subprocess.run(
+        [
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:size=160x90:rate=30",
+            "-t",
+            "1",
+            "-map",
+            "0:v",
+            "-map",
+            "1:v",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-disposition:v:0",
+            "default",
+            "-disposition:v:1",
+            "default",
+            str(sample),
+        ],
+        check=True,
+    )
+    from core.media.errors import MediaError
+
+    try:
+        probe_media(
+            sample, toolchain=Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+        )
+    except MediaError as exc:
+        assert exc.code == "AMBIGUOUS_VIDEO_STREAM"
+        assert exc.diagnostics["default_streams"] == [0, 1]
+    else:
+        raise AssertionError("multiple default video streams must be refused")

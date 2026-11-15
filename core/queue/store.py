@@ -275,6 +275,15 @@ class QueueStore:
                 ).fetchall()
         return [self._row_to_job(row) for row in rows]
 
+    def find_by_snapshot_hash(self, snapshot_hash: str) -> list[QueueJob]:
+        """Return jobs created from the same immutable export snapshot."""
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM queue_jobs WHERE snapshot_hash=? ORDER BY created_at",
+                (snapshot_hash,),
+            ).fetchall()
+        return [self._row_to_job(row) for row in rows]
+
     def transition(
         self,
         job_id: str,
