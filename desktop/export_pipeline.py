@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import json
+from dataclasses import replace
 from pathlib import Path
 
 from core.commit.transaction import CommitArtifact, CommitTransaction
@@ -101,11 +103,21 @@ def export_queue_job(
     manifest = packed.manifest
     if manifest is None:
         raise RuntimeError("Live Photo manifest is missing")
+    staged_manifest_model = manifest
+    output_root = Path(job.output_dir or snapshot["output_dir"]).resolve()
+    final_jpg = output_root / "LivePhoto" / Path(manifest.jpg_path).name
+    final_mov = output_root / "LivePhoto" / Path(manifest.mov_path).name
+    manifest = replace(manifest, jpg_path=str(final_jpg), mov_path=str(final_mov))
+    Path(packed.manifest_path).write_text(
+        json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     report(0.85, "validating")
     relative = [
         (segment_path, Path("视频片段") / segment_path.name),
-        (Path(manifest.jpg_path), Path("LivePhoto") / Path(manifest.jpg_path).name),
-        (Path(manifest.mov_path), Path("LivePhoto") / Path(manifest.mov_path).name),
+        (Path(staged_manifest_model.jpg_path), Path("LivePhoto") / Path(staged_manifest_model.jpg_path).name),
+        (Path(staged_manifest_model.mov_path), Path("LivePhoto") / Path(staged_manifest_model.mov_path).name),
         (
             Path(packed.manifest_path),
             Path("LivePhoto") / Path(packed.manifest_path).name,

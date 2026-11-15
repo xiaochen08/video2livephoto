@@ -108,6 +108,12 @@ def test_ipc_start_export_runs_queue_and_publishes_outputs(
     assert status["report_path"] == str(tmp_path / "out" / "导出报告.json")
     assert (tmp_path / "out" / "导出报告.json").is_file()
     assert json.loads((tmp_path / "out" / "导出报告.json").read_text(encoding="utf-8"))["status"] == "complete"
+    manifests = list((tmp_path / "out" / "LivePhoto").glob("*.manifest.json"))
+    assert manifests
+    for manifest_path in manifests:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert Path(manifest["jpg_path"]).is_file()
+        assert Path(manifest["mov_path"]).is_file()
     server._close_project()
 
 
