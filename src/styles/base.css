@@ -1,0 +1,271 @@
+@import './tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg-app);
+  color: var(--text-1);
+  font-family: var(--font-ui);
+  font-size: var(--fs-14);
+  line-height: var(--lh);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+  user-select: none;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+ul,
+ol,
+dl,
+dd,
+figure {
+  margin: 0;
+  padding: 0;
+}
+
+ul,
+ol {
+  list-style: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+
+button {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+input,
+textarea {
+  user-select: text;
+}
+
+img,
+video,
+canvas,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  box-shadow: var(--focus-ring);
+  border-radius: var(--r-2);
+}
+
+::selection {
+  background: var(--accent-soft-strong);
+}
+
+/* Scrollbars – thin, neutral */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3d43 transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #33363b;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #43464d;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Utilities kept deliberately small */
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.muted {
+  color: var(--text-3);
+}
+.secondary {
+  color: var(--text-2);
+}
+.small {
+  font-size: var(--fs-12);
+  line-height: 1.45;
+}
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.grow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.divider {
+  height: 1px;
+  background: var(--line-subtle);
+  border: 0;
+  margin: 0;
+}
+.vdivider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--line);
+  margin: 6px 2px;
+}
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: var(--r-1);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-raised);
+  color: var(--text-2);
+  font-size: var(--fs-11);
+  font-family: var(--font-ui);
+  line-height: 1;
+}
+.section-title {
+  font-size: var(--fs-12);
+  font-weight: var(--fw-semibold);
+  color: var(--text-3);
+  letter-spacing: 0.02em;
+}
+
+@keyframes v2-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes v2-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+@keyframes v2-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes v2-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+}
+@keyframes v2-slide-in-right {
+  from {
+    transform: translateX(16px);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+:root.reduce-motion *,
+:root.reduce-motion *::before,
+:root.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
+/* Shared tooltip (components/tooltip.ts) */
+.v2-tooltip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 90;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  max-width: 320px;
+  padding: 5px 8px;
+  border-radius: var(--r-2);
+  background: #2a2c31;
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  line-height: 1.4;
+  box-shadow: var(--shadow-pop);
+  pointer-events: none;
+  animation: v2-fade-in var(--dur-press) var(--ease-out);
+}
+.v2-tooltip .kbd {
+  background: #1f2125;
+}
