@@ -127,6 +127,7 @@ class QueueRunner:
             result = future.result()
         except Exception:
             return
+        succeeded = False
         try:
             self.store.transition(
                 job.job_id,
@@ -135,6 +136,7 @@ class QueueRunner:
                 phase="succeeded",
                 result=result or {},
             )
+            succeeded = True
         except Exception:
             # A missing/invalid transition must leave a durable failure rather than
             # making a half-committed result look successful.
@@ -147,7 +149,7 @@ class QueueRunner:
                 )
             except Exception:
                 pass
-        if self._on_job_succeeded is not None:
+        if succeeded and self._on_job_succeeded is not None:
             try:
                 new_limit = self._on_job_succeeded(job, result)
                 if new_limit is not None:

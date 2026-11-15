@@ -111,3 +111,26 @@ def test_runner_can_promote_from_one_to_two_after_success(tmp_path):
     assert peak == 2
     assert all(store.get(job.job_id).state == QueueState.SUCCEEDED for job in jobs)
     runner.close(cancel_running=False)
+
+
+def test_runner_does_not_promote_after_failed_worker(tmp_path):
+    store = QueueStore(tmp_path / "queue.sqlite3")
+    job = store.enqueue(clip_id="failed", snapshot={"n": 1})
+    seen: list[object] = []
+
+    def worker(_job, _cancel, _report):
+        raise RuntimeError("boom")
+
+    runner = QueueRunner(
+        store,
+        worker,
+        max_workers=2,
+        initial_workers=1,
+        on_job_succeeded=lambda item, result: seen.append((item.job_id, result)) or 2,
+    )
+    runner.pump()
+    runner.wait(timeout=5)
+    assert store.get(job.job_id).state == QueueState.FAILED
+    assert seen == []
+    assert runner.worker_limit == 1
+    runner.close(cancel_running=False)
