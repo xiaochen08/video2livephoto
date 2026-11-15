@@ -10,7 +10,7 @@
     "typecheck": "vue-tsc --noEmit -p tsconfig.json",
     "dev:desktop": "vite --mode desktop",
     "dev": "vite",
-    "package:win": "npm run build && electron-builder --win nsis",
+    "package:win": "npm run build:desktop && electron-builder --win nsis",
     "selftest": "node scripts/selftest.mjs",
     "test": "npm run build && npm run selftest",
     "start": "electron ."
