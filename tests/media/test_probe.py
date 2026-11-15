@@ -175,3 +175,67 @@ def test_probe_rejects_multiple_default_video_streams(
         assert exc.diagnostics["default_streams"] == [0, 1]
     else:
         raise AssertionError("multiple default video streams must be refused")
+
+
+def test_probe_rejects_multiple_video_streams_without_default(
+    ffmpeg_path: str, ffprobe_path: str, tmp_path: Path, monkeypatch
+) -> None:
+    sample = tmp_path / "ambiguous-no-default-videos.mp4"
+    import subprocess
+
+    subprocess.run(
+        [
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=green:size=160x90:rate=30",
+            "-t",
+            "1",
+            "-map",
+            "0:v",
+            "-map",
+            "1:v",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-disposition:v:0",
+            "0",
+            "-disposition:v:1",
+            "0",
+            str(sample),
+        ],
+        check=True,
+    )
+    from copy import deepcopy
+
+    from core.media.errors import MediaError
+    import core.media.probe as probe_module
+
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    raw = deepcopy(probe_module._run_probe(sample, toolchain, 30.0, None))
+    for stream in raw["streams"]:
+        if stream.get("codec_type") == "video":
+            stream.setdefault("disposition", {})["default"] = 0
+    monkeypatch.setattr(
+        probe_module,
+        "_run_probe",
+        lambda *_args, **_kwargs: raw,
+    )
+
+    try:
+        probe_media(sample, toolchain=toolchain)
+    except MediaError as exc:
+        assert exc.code == "AMBIGUOUS_VIDEO_STREAM"
+        assert exc.diagnostics["default_streams"] == []
+    else:
+        raise AssertionError("multiple video streams without a default must be refused")
