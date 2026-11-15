@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -77,6 +78,7 @@ def test_ipc_start_export_runs_queue_and_publishes_outputs(
     assert list((tmp_path / "out" / "LivePhoto").glob("*.JPG"))
     assert status["report_path"] == str(tmp_path / "out" / "导出报告.json")
     assert (tmp_path / "out" / "导出报告.json").is_file()
+    assert json.loads((tmp_path / "out" / "导出报告.json").read_text(encoding="utf-8"))["status"] == "complete"
     server._close_project()
 
 

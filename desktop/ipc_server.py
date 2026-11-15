@@ -100,6 +100,11 @@ class JsonlIpcServer:
         report_path = output_dir / "导出报告.json"
         payload = {
             "schema_version": "m6.export-report.v1",
+            "status": (
+                "complete"
+                if all(job.state == QueueState.SUCCEEDED for job in jobs)
+                else "complete_with_errors"
+            ),
             "project_id": jobs[0].snapshot.get("project_id"),
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "jobs": [self._job_dict(job) for job in jobs],
@@ -116,6 +121,36 @@ class JsonlIpcServer:
         except OSError:
             return None
         return str(report_path)
+
+    def _mark_export_report_in_progress(
+        self, output_dir: Path, project_id: str | None
+    ) -> None:
+        """Replace a prior final report so a new batch cannot expose stale data."""
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            report_path = output_dir / "导出报告.json"
+            partial = output_dir / ".导出报告.json.partial"
+            partial.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "m6.export-report.v1",
+                        "status": "in_progress",
+                        "project_id": project_id,
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "jobs": [],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            os.replace(partial, report_path)
+        except OSError:
+            # The export itself remains governed by its own transaction; a
+            # report write failure is surfaced by report_path=None on status.
+            return
 
     def run(self) -> int:
         for line in sys.stdin:
@@ -225,6 +260,9 @@ class JsonlIpcServer:
             project = confirmation["project"]
             output_dir = Path(
                 params.get("output_dir") or self.project_path.parent / "导出"
+            )
+            self._mark_export_report_in_progress(
+                output_dir, str(project.get("project_id"))
             )
             temp_dir = (
                 self.project_path.parent / f".{self.project_path.stem}.export-tmp"
@@ -336,6 +374,10 @@ class JsonlIpcServer:
                 raise M3ProjectError(
                     "RETRY_NOT_AVAILABLE", "只有失败任务可以从界面重试；中断任务请先确认恢复。"
                 )
+            self._mark_export_report_in_progress(
+                Path(job.output_dir).resolve() if job.output_dir else self.project_path.parent / "导出",
+                str(job.snapshot.get("project_id")),
+            )
             retried = self.queue_store.retry(job.job_id)
             self.runner.pump()
             return {"ok": True, "job": self._job_dict(retried)}
