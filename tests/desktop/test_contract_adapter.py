@@ -107,3 +107,17 @@ def test_analysis_start_is_single_request_and_deduplicates(
     assert len(server._analysis_by_request) == 1
     server._close_project()
     server._analysis_executor.shutdown(wait=False, cancel_futures=False)
+
+
+def test_analysis_without_project_path_uses_configured_project_directory(
+    small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    monkeypatch.setattr("desktop.service.Toolchain.discover", lambda: toolchain)
+    monkeypatch.setenv("VIDEO2LIVEPHOTO_PROJECT_DIR", str(tmp_path / "projects"))
+    server = JsonlIpcServer()
+    started = server.handle(_request("analysis.start", {"source_path": str(small_mp4), "video_stream_index": 0, "project_name": "default-path", "request_id": "analysis-default-path"}))
+    completed = server.handle(_request("analysis.result", {"analysis_id": started["analysis_id"]}))
+    assert Path(completed["project_path"]).is_file()
+    server._close_project()
+    server._analysis_executor.shutdown(wait=False, cancel_futures=False)

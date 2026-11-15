@@ -1,7 +1,7 @@
 Final local verification (2026-11-15)
 
 py -3 -m pytest -q
-  PASS: 90 passed in 19.87s
+  PASS: 91 passed in 20.13s
 
 npm test
   PASS: Vite demo build (1947 modules), M3 IPC selftest, System logger selftest

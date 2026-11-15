@@ -497,8 +497,10 @@ class JsonlIpcServer:
     def _run_analysis(self, analysis_id: str, params: dict[str, Any], token: CancellationToken, epoch: int) -> dict[str, Any]:
         source_path = str(self._resolve_media_path(params))
         request_id = str(params.get("request_id") or "")
-        project_path = Path(str(params.get("project_path") or ""))
-        if not project_path:
+        project_path_value = str(params.get("project_path") or "").strip()
+        if project_path_value:
+            project_path = Path(project_path_value)
+        else:
             root = Path(os.environ.get("VIDEO2LIVEPHOTO_PROJECT_DIR", str(Path.home() / ".video2livephoto" / "projects")))
             root.mkdir(parents=True, exist_ok=True)
             project_path = root / f"{uuid.uuid4()}.sqlite3"

@@ -47,6 +47,10 @@ passed:
 
 - `window.m3` and `window.v2lpBridge` were present in the native renderer.
 - `ping` returned protocol `m3.ipc.v1`, service `m3-python`.
+- The no-explicit-project-path import path was reproduced and fixed: analysis
+  now creates a project under the configured project directory instead of
+  treating an empty path as `Path('.')`. A real Electron smoke request passed
+  through `analysis.start` → `analysis.result` after the fix.
 - A real local MP4 was imported through `analysis.start` → `analysis.result`
   once, with real frame indexing and shot detection. A duplicate request id
   returned the same analysis id.
