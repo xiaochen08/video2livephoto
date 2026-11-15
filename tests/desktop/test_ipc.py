@@ -1,11 +1,26 @@
 from __future__ import annotations
 
+import io
 import json
+import sys
 import time
 from pathlib import Path
 
 from core.media.toolchain import Toolchain
 from desktop.ipc_server import JsonlIpcServer
+
+
+def test_ipc_run_echoes_request_id(monkeypatch) -> None:
+    stdin = io.StringIO(
+        '{"id":"renderer-1","protocol":"m3.ipc.v1","method":"ping"}\n'
+    )
+    stdout = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    assert JsonlIpcServer().run() == 0
+    response = json.loads(stdout.getvalue())
+    assert response["id"] == "renderer-1"
+    assert response["ok"] is True
 
 
 def test_ipc_protocol_ping_and_real_import(

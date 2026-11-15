@@ -156,6 +156,7 @@ class JsonlIpcServer:
         for line in sys.stdin:
             if not line.strip():
                 continue
+            request: dict[str, Any] = {}
             try:
                 request = json.loads(line)
                 response = self.handle(request)
@@ -168,6 +169,8 @@ class JsonlIpcServer:
                         "details": getattr(exc, "details", {}),
                     },
                 }
+            if "id" in request:
+                response["id"] = request["id"]
             sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
             sys.stdout.flush()
         self._close_project()
