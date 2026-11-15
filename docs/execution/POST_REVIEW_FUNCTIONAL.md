@@ -7,5 +7,5 @@ R 复审绑定的 `589c417` 之后，功能分支继续完成了以下源码补�
 - `d89e619`、`bdf32ee`、`0187413`：批次终态导出报告、renderer 自动轮询、失败任务显式重试。
 - `6d7483b`：M5 注入并验证 `mebx` timed metadata 轨、样本 `-1`、`elst` 显示时间和非零 still-image-time；本地兼容性仍为 `local-validation-only`。
 
-当前源码回归为 76 项 Python 测试通过。上述功能补强不改变“真实婚礼真值、iPhone Photos、Windows 安装实机和 M1 卷级故障矩阵仍需外部证据”的限制。
+当前源码回归为 77 项 Python 测试通过。上述功能补强不改变“真实婚礼真值、iPhone Photos、Windows 安装实机和 M1 卷级故障矩阵仍需外部证据”的限制。
 

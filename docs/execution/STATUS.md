@@ -4,7 +4,7 @@
 - 基线：`a8dbc02bd56e63c0c71e9094858cc0e87611bdd6`
 - 原始 main：`e6231886298e0a4bccf0e6591784a2fdba736db6`
 - 当前开发状态：源码与自动化完成 R 复审，外部交付仍按条件阻塞
-- 当前测试基线：76 passed；Ruff/compileall、Vite、TypeScript、IPC 自测通过
+- 当前测试基线：77 passed；Ruff/compileall、Vite、TypeScript、IPC 自测通过
 - 工作区：`E:\LIVE\_audit\video2livephoto-v1-integration`
 
 ## 会话登记

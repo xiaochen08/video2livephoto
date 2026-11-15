@@ -16,7 +16,7 @@
 ## 固定执行结果
 
 ```text
-py -3 -m pytest -q                         PASS  76 passed in 16.63s
+py -3 -m pytest -q                         PASS  77 passed in 17.46s
 py -3 -m compileall -q core desktop tests packaging  PASS
 py -3 -m ruff check core desktop tests packaging    PASS
 npm run build                              PASS
