@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,46 @@ class JsonlIpcServer:
         payload = dict(job.__dict__)
         payload["state"] = job.state.value
         return payload
+
+    def _write_export_report(self) -> str | None:
+        """Write a batch report only after every queued job reaches a terminal state."""
+        if self.queue_store is None:
+            return None
+        jobs = self.queue_store.list()
+        if not jobs or any(
+            job.state
+            in {
+                QueueState.PENDING,
+                QueueState.PROCESSING,
+                QueueState.VALIDATING,
+                QueueState.COMMITTING,
+            }
+            for job in jobs
+        ):
+            return None
+        output_dirs = {job.output_dir for job in jobs if job.output_dir}
+        if len(output_dirs) != 1:
+            return None
+        output_dir = Path(next(iter(output_dirs))).resolve()
+        report_path = output_dir / "导出报告.json"
+        payload = {
+            "schema_version": "m6.export-report.v1",
+            "project_id": jobs[0].snapshot.get("project_id"),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "jobs": [self._job_dict(job) for job in jobs],
+        }
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            partial = output_dir / ".导出报告.json.partial"
+            partial.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            os.replace(partial, report_path)
+        except OSError:
+            return None
+        return str(report_path)
 
     def run(self) -> int:
         for line in sys.stdin:
@@ -227,10 +268,12 @@ class JsonlIpcServer:
         elif method == "export_status":
             if self.queue_store is None:
                 raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
+            report_path = self._write_export_report()
             return {
                 "ok": True,
                 "jobs": [self._job_dict(job) for job in self.queue_store.list()],
                 "worker_limit": self.runner.worker_limit if self.runner else 0,
+                "report_path": report_path,
             }
         elif method == "pause_export":
             if self.runner is None:

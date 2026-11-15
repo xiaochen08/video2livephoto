@@ -75,6 +75,8 @@ def test_ipc_start_export_runs_queue_and_publishes_outputs(
         raise AssertionError(status)
     assert list((tmp_path / "out" / "视频片段").glob("*.mp4"))
     assert list((tmp_path / "out" / "LivePhoto").glob("*.JPG"))
+    assert status["report_path"] == str(tmp_path / "out" / "导出报告.json")
+    assert (tmp_path / "out" / "导出报告.json").is_file()
     server._close_project()
 
 
