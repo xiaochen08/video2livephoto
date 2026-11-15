@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
 const { existsSync } = require("node:fs");
 const path = require("node:path");
@@ -96,6 +96,23 @@ function createWindow() {
 app.whenReady().then(() => {
   bridge.start();
   ipcMain.handle("m3:request", (_event, method, params) => bridge.request(method, params));
+  ipcMain.handle("m3:pick-file", async (_event, options = {}) => {
+    const mode = options.mode === "save" ? "save" : "open";
+    if (mode === "save") {
+      const result = await dialog.showSaveDialog({
+        title: options.title || "选择项目文件",
+        defaultPath: options.defaultPath || "video2livephoto-project.sqlite3",
+        filters: options.filters || [{ name: "SQLite 项目", extensions: ["sqlite3", "db"] }],
+      });
+      return result.canceled ? null : result.filePath;
+    }
+    const result = await dialog.showOpenDialog({
+      title: options.title || "选择源视频",
+      properties: ["openFile"],
+      filters: options.filters || [{ name: "视频文件", extensions: ["mp4", "mov", "m4v"] }],
+    });
+    return result.canceled ? null : result.filePaths[0] || null;
+  });
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
