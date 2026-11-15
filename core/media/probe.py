@@ -232,6 +232,8 @@ def probe_media(
     token: CancellationToken | None = None,
     timeout_seconds: float = 30.0,
     include_full_sha256: bool = False,
+    selected_video_stream: int | None = None,
+    allow_ambiguous: bool = False,
 ) -> MediaProbeResult:
     source = Path(path)
     toolchain = toolchain or Toolchain.discover()
@@ -265,25 +267,48 @@ def probe_media(
             message="媒体中没有可用视频流",
         )
     defaults = tuple(item for item in videos if item.disposition.get("default", 0) == 1)
-    if len(defaults) > 1 or (len(videos) > 1 and not defaults):
-        raise MediaError(
-            code="AMBIGUOUS_VIDEO_STREAM",
-            stage="probe",
-            path=str(source),
-            stream_index=None,
-            retryable=False,
-            message="媒体包含多个未能唯一确定的视频流，无法安全确定主视频",
-            diagnostics={
-                "candidate_streams": [item.index for item in videos],
-                "default_streams": [item.index for item in defaults],
-                "attached_picture_streams": [item.index for item in attached_pictures],
-            },
-        )
-    candidates = defaults or videos
-    selected = min(candidates, key=lambda item: item.index)
-    reason = "default_disposition" if defaults else "lowest_stream_index"
+    if selected_video_stream is not None:
+        selected = next((item for item in videos if item.index == int(selected_video_stream)), None)
+        if selected is None:
+            raise MediaError(
+                code="VIDEO_STREAM_NOT_FOUND",
+                stage="probe",
+                path=str(source),
+                stream_index=int(selected_video_stream),
+                retryable=False,
+                message="用户选择的视频流不存在或不可用",
+                diagnostics={"candidate_streams": [item.index for item in videos]},
+            )
+        candidates = (selected,)
+        reason = "user_selection"
+    elif len(defaults) > 1 or (len(videos) > 1 and not defaults):
+        if not allow_ambiguous:
+            raise MediaError(
+                code="AMBIGUOUS_VIDEO_STREAM",
+                stage="probe",
+                path=str(source),
+                stream_index=None,
+                retryable=False,
+                message="媒体包含多个未能唯一确定的视频流，无法安全确定主视频",
+                diagnostics={
+                    "candidate_streams": [item.index for item in videos],
+                    "default_streams": [item.index for item in defaults],
+                    "attached_picture_streams": [item.index for item in attached_pictures],
+                },
+            )
+        candidates = videos
+        selected = min(candidates, key=lambda item: item.index)
+        reason = "ambiguous_unselected"
+    else:
+        candidates = defaults or videos
+        selected = min(candidates, key=lambda item: item.index)
+        reason = "default_disposition" if defaults else "lowest_stream_index"
     diagnostics: list[str] = []
-    if len(candidates) > 1:
+    if reason == "ambiguous_unselected":
+        diagnostics.append(
+            "multiple video streams; user selection is required before analysis"
+        )
+    elif len(candidates) > 1:
         diagnostics.append(
             f"multiple video streams; selected stream {selected.index} by {reason}"
         )

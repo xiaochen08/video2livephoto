@@ -1,172 +1,255 @@
-/**
- * DesktopAdapter — 桌面适配器骨架（未连接）。
- * Forwards every contract call to the Electron preload bridge. It never falls back to demo data:
- * when the bridge is missing or the backend does not answer, connect() rejects and the app shows
- * the connection-error screen with a diagnostics entry.
- */
-import type { AnalysisEvent, ConnectionInfo, RecoveryProgress, TaskEvent, V2LPAdapter } from '@/adapters/contract'
+import type {
+  AnalysisEvent,
+  AnalysisHandle,
+  AppSettings,
+  ConnectionInfo,
+  FileRef,
+  FrameRequest,
+  FrameResult,
+  OpenProjectResult,
+  PreflightResult,
+  ProbeResult,
+  RecoveryProgress,
+  RecoverySummary,
+  TaskEvent,
+  V2LPAdapter,
+} from '@/adapters/contract'
+import type { EditCommand } from '@/domain/commands'
 import { AdapterError, makeError } from '@/domain/errors'
-import type { AppError } from '@/domain/types'
-import { CHANNELS, type ChannelKey, type V2LPBridge } from './channels'
+import type { Project } from '@/domain/types'
 
-function isAppError(v: unknown): v is AppError {
-  return !!v && typeof v === 'object' && 'code' in v && 'message' in v
+type M3Bridge = {
+  request(method: string, params?: Record<string, unknown>): Promise<any>
+  pickFile(options?: Record<string, unknown>): Promise<string | null>
+  pathForFile?(file: File): string | null
+  on?(channel: string, listener: (payload: unknown) => void): () => void
+  quit?(): Promise<void>
+}
+
+declare global {
+  interface Window {
+    m3?: M3Bridge
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return !!value && typeof value === 'object'
+}
+
+function asAppError(error: unknown, fallbackCode = 'IPC_ERROR'): AdapterError {
+  if (error instanceof AdapterError) return error
+  const value = isRecord(error) ? error : {}
+  const code = typeof value.code === 'string' ? value.code : fallbackCode
+  const message = typeof value.message === 'string' ? value.message : String(error)
+  return new AdapterError(makeError(code, message, { detail: value.details ?? value.detail ?? null, retryable: Boolean(value.retryable), actions: value.retryable ? ['retry'] : [] }))
+}
+
+function abortError(): DOMException {
+  return new DOMException('操作已取消。', 'AbortError')
+}
+
+function normalizeFile(path: string): FileRef {
+  const name = path.split(/[\\/]/).pop() || path
+  return { kind: 'desktop', ref_id: path, display_path: path, name, size_bytes: '0' }
+}
+
+function normalizeProject(raw: any): Project {
+  if (raw?.timeline && raw?.media && raw?.source) return raw as Project
+  const sourcePath = String(raw?.source_path || '')
+  const probe = raw?.probe || {}
+  const streams = Array.isArray(probe.streams) ? probe.streams : []
+  const videos = streams.filter((stream: any) => stream?.codec_type === 'video')
+  const audios = streams.filter((stream: any) => stream?.codec_type === 'audio')
+  const selected = Number.isInteger(probe.selected_video_stream) ? probe.selected_video_stream : videos[0]?.index ?? null
+  const container = probe.container || {}
+  const sourceIdentity = raw?.source_identity || {}
+  const cuts = (raw?.cuts || []).map((cut: any) => ({
+    cut_id: String(cut.cut_id), frame: Number(cut.boundary_index), pts: null, kind: ['hard', 'dissolve', 'flash_candidate', 'fast_motion_candidate', 'manual'].includes(cut.kind) ? cut.kind : 'manual', transition: null,
+    review: cut.needs_review && !cut.checked ? 'pending' : 'confirmed', confirmed_by: cut.checked ? (cut.origin === 'detector' ? 'analysis' : 'user') : null, skipped: false,
+    origin: cut.origin === 'detector' ? 'analysis' : 'user', reason: cut.reason ?? null, confidence: cut.confidence ?? null,
+  }))
+  const clips = (raw?.segments || []).map((segment: any) => ({
+    clip_id: String(segment.clip_id), start_frame: Number(segment.start_index), end_frame: Number(segment.end_index), start_pts: null, end_pts: null,
+    display_index: Number(segment.output_number || 0), name: null, name_origin: 'default', export_selected: segment.selected_for_export !== false,
+    audio: segment.audio_enabled === false ? 'muted' : 'source', cover: { frame: Number(segment.cover_frame_index ?? segment.start_index), origin: segment.cover_frame_index == null ? 'auto' : 'user', status: 'valid' },
+  }))
+  const durationUs = Math.round(Number(container.duration_seconds || 0) * 1_000_000)
+  const media = {
+    container: String((container.format_names || ['unknown'])[0]), size_bytes: String(sourceIdentity.size || 0), duration_us: durationUs,
+    video_streams: videos.map((stream: any) => ({
+      stream_index: Number(stream.index), codec: String(stream.codec_name || 'unknown'), width: Number(stream.width || 0), height: Number(stream.height || 0),
+      display_aspect: stream.display_aspect_ratio || { num: Number(stream.width || 1), den: Number(stream.height || 1) }, rotation_deg: Number(stream.rotation || 0),
+      frame_rate: stream.avg_frame_rate_hint || stream.frame_rate_hint || { num: 0, den: 1 }, vfr: false, frame_count: Number(stream.index) === selected ? Number(raw?.frame_count || 0) : 0,
+      time_base: stream.time_base || { num: 1, den: 1 }, duration_us: Math.round(Number(stream.duration_seconds || container.duration_seconds || 0) * 1_000_000),
+      color: { transfer: 'unknown', primaries: 'unknown', dolby_vision: false, log_profile: null, bit_depth: null }, is_default: Boolean(stream.disposition?.default), title: stream.tags?.title || null,
+    })),
+    audio_streams: audios.map((stream: any) => ({ stream_index: Number(stream.index), codec: String(stream.codec_name || 'unknown'), channels: Number(stream.channels || 0), sample_rate: Number(stream.sample_rate || 0), is_mixed_main: null })),
+    selected_video_stream: selected,
+  }
+  const stem = sourcePath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') || 'Video2LivePhoto'
+  return {
+    project_id: String(raw?.project_id || sourcePath), schema_version: 1, name: stem,
+    source: { path_display: sourcePath, file_name: sourcePath.split(/[\\/]/).pop() || sourcePath, size_bytes: String(sourceIdentity.size || 0), modified_at: String(sourceIdentity.mtime_ns || ''), fingerprint: sourceIdentity.full_sha256 || sourceIdentity.sampled_fingerprint || null, status: 'ok' },
+    media, analysis_version: 1, edit_version: Number(raw?.saved_revision || 0), saved_edit_version: Number(raw?.saved_revision || 0),
+    timeline: { frame_count: Number(raw?.frame_count || 0), cuts, clips }, history: { can_undo: false, can_redo: false, undo_label: null, redo_label: null },
+    export_settings: { output_dir: `${sourcePath.split(/[\\/]/).slice(0, -1).join('\\')}\\导出`, quality: 'source', color: 'sdr_rec709', name_base: stem }, recovery_pending: false, outdated_clip_ids: [],
+  }
+}
+
+function projectFromResponse(response: any): Project {
+  return normalizeProject(response?.project ?? response?.result?.project ?? response)
 }
 
 export class DesktopAdapter implements V2LPAdapter {
   readonly mode = 'desktop' as const
-  private bridge: V2LPBridge | null = typeof window !== 'undefined' ? (window.v2lpBridge ?? null) : null
+  private readonly bridge: M3Bridge | null = typeof window !== 'undefined' ? window.m3 ?? null : null
 
-  private async call<T>(key: ChannelKey, payload?: unknown, signal?: AbortSignal): Promise<T> {
-    if (!this.bridge) {
-      throw new AdapterError(makeError('BRIDGE_UNAVAILABLE', '未检测到桌面桥接（window.v2lpBridge）。', { actions: ['open_diagnostics', 'retry'] }))
-    }
-    if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
+  private async call<T>(method: string, params: object = {}, signal?: AbortSignal, timeoutMs = 60_000): Promise<T> {
+    if (!this.bridge) throw asAppError({ code: 'BRIDGE_UNAVAILABLE', message: '未检测到桌面桥接，正式模式不会使用演示数据。', retryable: true }, 'BRIDGE_UNAVAILABLE')
+    if (signal?.aborted) throw abortError()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let onAbort: (() => void) | undefined
     try {
-      const result = await this.bridge.invoke(CHANNELS[key], payload)
-      if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
-      return result as T
-    } catch (e) {
-      if (e instanceof DOMException) throw e
-      // 待映射: existing backend error envelope → AppError (codes passed through verbatim)
-      if (isAppError(e)) throw new AdapterError(makeError(e.code, e.message, e))
-      throw new AdapterError(makeError('IPC_ERROR', e instanceof Error ? e.message : String(e), { detail: CHANNELS[key] }))
+      const operation = this.bridge.request(method, params as Record<string, unknown>)
+      const guarded = new Promise<T>((resolve, reject) => {
+        timer = setTimeout(() => reject(asAppError({ code: 'BACKEND_TIMEOUT', message: `桌面后端在 ${timeoutMs}ms 内没有响应。`, retryable: true }, 'BACKEND_TIMEOUT')), timeoutMs)
+        onAbort = () => reject(abortError())
+        signal?.addEventListener('abort', onAbort, { once: true })
+        operation.then((result) => {
+          if (result?.ok === false) {
+            reject(asAppError(result.error ?? result))
+            return
+          }
+          if (result?.ok === true) {
+            const { ok: _ok, id: _id, ...payload } = result
+            resolve((Object.prototype.hasOwnProperty.call(payload, 'result') && Object.keys(payload).length === 1 ? payload.result : payload) as T)
+            return
+          }
+          resolve(result as T)
+        }, (error) => reject(asAppError(error)))
+      })
+      return await guarded
+    } finally {
+      if (timer) clearTimeout(timer)
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort)
     }
   }
 
-  connect: V2LPAdapter['connect'] = async () => {
-    if (!this.bridge) {
-      throw new AdapterError(
-        makeError('BRIDGE_UNAVAILABLE', '无法连接桌面后端：当前窗口没有可用的桌面桥接。', {
-          detail: '生产模式不会使用演示数据。请确认应用由 Electron 启动且 preload 已注入 window.v2lpBridge。',
-          actions: ['retry', 'open_diagnostics'],
-          retryable: true,
-        }),
-      )
+  async connect(): Promise<ConnectionInfo> {
+    try {
+      const connected = await this.call<any>('connect', {}, undefined, 8_000)
+      return connected.connection ?? connected
+    } catch (error) {
+      const e = error as AdapterError
+      if (!(e instanceof AdapterError) || !['IPC_METHOD_UNKNOWN', 'IPC_ERROR'].includes(e.error.code)) throw error
+      const ping = await this.call<any>('ping', {}, undefined, 8_000)
+      return { mode: 'desktop', app_version: '1.0.0-candidate', backend_version: String(ping.service || 'm3-python'), capabilities: { backend_version: String(ping.service || 'm3-python'), frame_accurate_preview: true, gpu: { available: false, verified_encoder: null, note: '未验证 GPU。' }, hdr_output: { supported: false, note: '当前链路未验证 HDR 输出。' }, declick_audio: false, max_parallel_jobs: 1, livephoto_hint: { short_below_ms: 1000, long_above_ms: 15000 } } }
     }
-    const timeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new AdapterError(makeError('BACKEND_TIMEOUT', '桌面后端在 8 秒内没有响应。', { retryable: true, actions: ['retry', 'open_diagnostics'] }))), 8000),
-    )
-    return Promise.race([this.call<ConnectionInfo>('connect'), timeout])
   }
 
   projects: V2LPAdapter['projects'] = {
-    listRecent: () => this.call('projects.listRecent'),
-    open: (project_id, signal) => this.call('projects.open', { project_id }, signal),
-    pickProjectFile: () => this.call('projects.pickProjectFile'),
-    rename: (project_id, name) => this.call('projects.rename', { project_id, name }),
-    removeRecent: (project_id) => this.call('projects.removeRecent', { project_id }),
+    listRecent: () => this.call<any>('projects.listRecent').then((result) => result.projects ?? result.recent ?? []),
+    open: (project_id, signal) => this.call<any>('projects.open', { project_id }, signal).then((result) => ({ project: projectFromResponse(result), warnings: result.warnings ?? [] } as OpenProjectResult)),
+    pickProjectFile: () => this.bridge?.pickFile({ title: '打开项目文件', mode: 'open', filters: [{ name: 'SQLite 项目', extensions: ['sqlite3', 'db'] }] }).then((path) => path) ?? Promise.resolve(null),
+    rename: (project_id, name) => this.call('projects.rename', { project_id, name }).then(() => undefined),
+    removeRecent: (project_id) => this.call('projects.removeRecent', { project_id }).then(() => undefined),
     save: (project_id, edit_version, request_id) => this.call('projects.save', { project_id, edit_version, request_id }),
     relocateSource: (project_id, candidate) => this.call('projects.relocateSource', { project_id, candidate }),
   }
 
   media: V2LPAdapter['media'] = {
-    pickVideo: () => this.call('media.pickVideo'),
-    fromBrowserFile: () => {
-      // Desktop flow uses native dialogs / drag-drop paths resolved in the preload.
-      throw new AdapterError(makeError('UNSUPPORTED_IN_DESKTOP', '桌面模式通过系统对话框选择文件。'))
+    pickVideo: () => this.bridge?.pickFile({ title: '选择视频文件', mode: 'open', filters: [{ name: '视频文件', extensions: ['mp4', 'mov', 'm4v'] } ] }).then((path) => path ? normalizeFile(path) : null) ?? Promise.resolve(null),
+    fromBrowserFile: (file) => {
+      const path = this.bridge?.pathForFile?.(file) ?? (file as File & { path?: string }).path
+      if (!path) throw asAppError({ code: 'FILE_REF_UNAVAILABLE', message: '桌面拖放未返回受控文件引用。' }, 'FILE_REF_UNAVAILABLE')
+      return normalizeFile(path)
     },
-    probe: (file, signal) => this.call('media.probe', { file }, signal),
+    probe: (file, signal) => this.call<any>('media.probe', { file }, signal).then((result) => result.probe ?? result) as Promise<ProbeResult>,
   }
 
   analysis: V2LPAdapter['analysis'] = {
-    start: (params, onEvent) => {
+    start: (params, onEvent): AnalysisHandle => {
       let analysisId = ''
-      const off = this.bridge?.on(CHANNELS['analysis.event'], (p) => {
-        const e = p as AnalysisEvent
-        if (!analysisId || e.analysis_id === analysisId) onEvent(e)
-      })
-      const started = this.call<{ analysis_id: string }>('analysis.start', params)
-      const done = started
-        .then((r) => {
-          analysisId = r.analysis_id
-          // 待映射: completion signal; proposal: backend resolves a second invoke
-          return this.call<{ project_id: string; warnings: { code: string; message: string }[] }>('analysis.start', { ...params, await_result: true })
-        })
-        .finally(() => off?.())
-      return {
-        get analysis_id() {
-          return analysisId
-        },
-        done,
-        cancel: async () => {
-          if (analysisId) await this.call('analysis.cancel', { analysis_id: analysisId })
-        },
-      }
+      const off = this.bridge?.on?.('v2lp:analysis:event', (payload) => { const event = payload as AnalysisEvent; const matches = event.analysis_id === analysisId || (!analysisId && event.request_id === params.request_id); if (event.analysis_id && matches) onEvent(event) })
+      const filePath = params.file.kind === 'desktop' ? params.file.display_path : ''
+      const started = this.call<any>('analysis.start', { source_path: filePath, project_name: params.project_name, video_stream_index: params.video_stream_index, request_id: params.request_id })
+      const done = started.then((result) => {
+        analysisId = String(result.analysis_id || '')
+        if (!analysisId) throw asAppError({ code: 'ANALYSIS_ID_MISSING', message: '后端未返回分析任务 ID。' }, 'ANALYSIS_ID_MISSING')
+        return this.call<any>('analysis.result', { analysis_id: analysisId, request_id: params.request_id }, undefined, 3_600_000)
+      }).then((result) => ({ project_id: String(result.project_id), warnings: result.warnings ?? [] })).finally(() => off?.())
+      return { get analysis_id() { return analysisId }, done, cancel: () => analysisId ? this.call('analysis.cancel', { analysis_id: analysisId, request_id: params.request_id }).then(() => undefined) : started.then((result) => { analysisId = String(result.analysis_id || ''); return this.call('analysis.cancel', { analysis_id: analysisId, request_id: params.request_id }).then(() => undefined) }) }
     },
     reanalyze: (project_id, request_id) => this.call('analysis.reanalyze', { project_id, request_id }),
   }
 
   preview: V2LPAdapter['preview'] = {
-    getSource: (project_id) => this.call('preview.getSource', { project_id }),
-    getFrame: (req, signal) => this.call('preview.getFrame', req, signal),
-    releaseFrame: (url) => void this.call('preview.releaseFrame', { url }).catch(() => undefined),
+    getSource: (project_id) => this.call<any>('preview.getSource', { project_id }).then((result) => result.source ?? result),
+    getFrame: (req: FrameRequest, signal?: AbortSignal) => this.call<any>('preview.getFrame', { ...req }, signal).then((result) => result.frame ?? result) as Promise<FrameResult>,
+    releaseFrame: (url) => { void this.call('preview.releaseFrame', { url }).catch(() => undefined) },
   }
 
   timeline: V2LPAdapter['timeline'] = {
-    apply: (project_id, base_edit_version, cmd, request_id) => this.call('timeline.apply', { project_id, base_edit_version, cmd, request_id }),
+    apply: (project_id, base_edit_version, cmd: EditCommand, request_id) => this.call('timeline.apply', { project_id, base_edit_version, cmd, request_id }),
     undo: (project_id, base_edit_version, request_id) => this.call('timeline.undo', { project_id, base_edit_version, request_id }),
     redo: (project_id, base_edit_version, request_id) => this.call('timeline.redo', { project_id, base_edit_version, request_id }),
   }
 
   export: V2LPAdapter['export'] = {
-    preflight: (project_id, edit_version, clip_ids, settings, signal) => this.call('export.preflight', { project_id, edit_version, clip_ids, settings }, signal),
-    createBatch: (req) => this.call('export.createBatch', req),
+    preflight: (project_id, edit_version, clip_ids, settings, signal) => this.call<any>('export.preflight', { project_id, edit_version, clip_ids, settings }, signal).then((result) => result.preflight ?? result) as Promise<PreflightResult>,
+    createBatch: (req) => this.call('export.createBatch', { ...req }),
   }
 
   tasks: V2LPAdapter['tasks'] = {
     subscribe: (project_id, handler) => {
-      const off = this.bridge?.on(CHANNELS['tasks.event'], (p) => {
-        const e = p as TaskEvent
-        if (e.project_id === project_id) handler(e)
-      })
-      // backend replies with batch_snapshot events first (see contract)
-      void this.call('tasks.subscribe', { project_id }).catch(() => undefined)
-      return () => {
-        off?.()
-        void this.call('tasks.unsubscribe', { project_id }).catch(() => undefined)
-      }
+      const off = this.bridge?.on?.('v2lp:tasks:event', (payload) => { const event = payload as TaskEvent; if (event.project_id === project_id) handler(event) })
+      void this.call('tasks.subscribe', { project_id }).catch((error) => { void error; })
+      const timer = off ? undefined : setInterval(() => { void this.call<any>('tasks.listBatches', { project_id }).then((result) => (result.batches ?? []) as Array<import('@/domain/types').Batch>).then((batches) => batches.forEach((batch) => handler({ type: 'batch_snapshot', project_id, batch }))).catch(() => undefined) }, 500)
+      return () => { off?.(); if (timer) clearInterval(timer); void this.call('tasks.unsubscribe', { project_id }).catch(() => undefined) }
     },
-    getBatch: (batch_id) => this.call('tasks.getBatch', { batch_id }),
-    listBatches: (project_id) => this.call('tasks.listBatches', { project_id }),
-    pauseQueue: (batch_id, request_id) => this.call('tasks.pauseQueue', { batch_id, request_id }),
-    resumeQueue: (batch_id, request_id) => this.call('tasks.resumeQueue', { batch_id, request_id }),
+    getBatch: (batch_id) => this.call<any>('tasks.getBatch', { batch_id }).then((result) => result.batch ?? result),
+    listBatches: (project_id) => this.call<any>('tasks.listBatches', { project_id }).then((result) => result.batches ?? []),
+    pauseQueue: (batch_id, request_id) => this.call('tasks.pauseQueue', { batch_id, request_id }).then(() => undefined),
+    resumeQueue: (batch_id, request_id) => this.call('tasks.resumeQueue', { batch_id, request_id }).then(() => undefined),
     cancelJob: (job_id, request_id) => this.call('tasks.cancelJob', { job_id, request_id }),
-    stopBatch: (batch_id, request_id) => this.call('tasks.stopBatch', { batch_id, request_id }),
+    stopBatch: (batch_id, request_id) => this.call('tasks.stopBatch', { batch_id, request_id }).then(() => undefined),
     retryFailed: (batch_id, request_id, job_ids) => this.call('tasks.retryFailed', { batch_id, request_id, job_ids }),
   }
 
   recovery: V2LPAdapter['recovery'] = {
     inspect: (project_id, onProgress, signal) => {
-      const off = this.bridge?.on(CHANNELS['recovery.progress'], (p) => onProgress(p as RecoveryProgress))
-      return this.call<Awaited<ReturnType<V2LPAdapter['recovery']['inspect']>>>('recovery.inspect', { project_id }, signal).finally(() => off?.())
+      const off = this.bridge?.on?.('v2lp:recovery:progress', (payload) => {
+        const progress = payload as RecoveryProgress & { project_id?: string }
+        if (progress.project_id === project_id) onProgress(progress)
+      })
+      return this.call<any>('recovery.inspect', { project_id }, signal).then((result) => result.summary ?? result).then((summary: RecoverySummary) => { onProgress({ checked: summary.verified_success.length + summary.needs_redo.length, total: summary.verified_success.length + summary.needs_redo.length + summary.commit_unknown.length, current: null }); return summary }).finally(() => off?.())
     },
     continueRemaining: (project_id, request_id) => this.call('recovery.continueRemaining', { project_id, request_id }),
-    dismiss: (project_id) => this.call('recovery.dismiss', { project_id }),
+    dismiss: (project_id) => this.call('recovery.dismiss', { project_id }).then(() => undefined),
   }
 
   files: V2LPAdapter['files'] = {
-    openArtifact: (job_id, kind) => this.call('files.openArtifact', { job_id, kind }),
-    revealOutput: (project_id, job_id) => this.call('files.revealOutput', { project_id, job_id }),
-    readReport: (job_id) => this.call('files.readReport', { job_id }),
-    pickOutputDir: () => this.call('files.pickOutputDir'),
+    openArtifact: (job_id, kind) => this.call('files.openArtifact', { job_id, kind }).then(() => undefined),
+    revealOutput: (project_id, job_id) => this.call('files.revealOutput', { project_id, job_id }).then(() => undefined),
+    readReport: (job_id) => this.call('files.readReport', { job_id }).then((result: any) => String(result.body ?? result.report ?? result)),
+    pickOutputDir: () => this.bridge?.pickFile({ title: '选择导出目录', mode: 'directory' }) ?? Promise.resolve(null),
   }
 
   settings: V2LPAdapter['settings'] = {
-    get: () => this.call('settings.get'),
-    update: (patch) => this.call('settings.update', patch),
-    cacheInfo: () => this.call('settings.cacheInfo'),
+    get: () => this.call<any>('settings.get').then((result) => result.settings ?? result) as Promise<AppSettings>,
+    update: (patch) => this.call<any>('settings.update', patch).then((result) => result.settings ?? result) as Promise<AppSettings>,
+    cacheInfo: () => this.call<any>('settings.cacheInfo').then((result) => result.cache ?? result),
     clearCache: (item_ids) => this.call('settings.clearCache', { item_ids }),
   }
 
   diagnostics: V2LPAdapter['diagnostics'] = {
-    info: () => this.call('diagnostics.info'),
-    logs: (limit) => this.call('diagnostics.logs', { limit }),
+    info: () => this.call<any>('diagnostics.info').then((result) => result.diagnostics ?? result),
+    logs: (limit) => this.call('diagnostics.logs', { limit }).then((result: any) => result.logs ?? []),
     exportBundle: (opts) => this.call('diagnostics.exportBundle', opts),
   }
 
   app: V2LPAdapter['app'] = {
-    onCloseRequested: (handler) => this.bridge?.on(CHANNELS['app.closeRequested'], () => handler()) ?? (() => undefined),
-    quit: () => this.call('app.quit'),
+    onCloseRequested: (handler) => this.bridge?.on?.('v2lp:app:close-requested', handler) ?? (() => undefined),
+    quit: () => this.bridge?.quit?.() ?? this.call('app.quit').then(() => undefined),
   }
 }

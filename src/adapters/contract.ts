@@ -1,8 +1,9 @@
 /**
  * Adapter boundary between the UI and the desktop backend (Electron + Python/FFmpeg + SQLite).
  *
- * STATUS: 前端接入提案（待映射契约）. Method names, payloads and channel names are proposals;
- * Codex maps them onto the existing backend after reading its source. See docs/BACKEND_CONTRACT.md.
+ * The renderer-facing contract is implemented by DesktopAdapter on top of the
+ * existing Electron → Python/FFmpeg/SQLite M3 bridge. Backend-specific errors
+ * and PTS strings stay visible at this boundary.
  *
  * Rules for every method:
  *  - Async, rejects with AdapterError(AppError). Error codes are passed through verbatim.
@@ -66,6 +67,7 @@ export interface AnalysisStageState {
 
 export interface AnalysisEvent {
   analysis_id: string
+  request_id?: string
   seq: number
   stages: AnalysisStageState[]
   shots_found: number | null

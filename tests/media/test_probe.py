@@ -173,6 +173,13 @@ def test_probe_rejects_multiple_default_video_streams(
     except MediaError as exc:
         assert exc.code == "AMBIGUOUS_VIDEO_STREAM"
         assert exc.diagnostics["default_streams"] == [0, 1]
+        selected = probe_media(
+            sample,
+            toolchain=Toolchain.from_paths(ffmpeg_path, ffprobe_path),
+            selected_video_stream=1,
+        )
+        assert selected.selected_video_stream == 1
+        assert selected.selected_video_reason == "user_selection"
     else:
         raise AssertionError("multiple default video streams must be refused")
 
@@ -237,5 +244,11 @@ def test_probe_rejects_multiple_video_streams_without_default(
     except MediaError as exc:
         assert exc.code == "AMBIGUOUS_VIDEO_STREAM"
         assert exc.diagnostics["default_streams"] == []
+        provisional = probe_media(
+            sample,
+            toolchain=toolchain,
+            allow_ambiguous=True,
+        )
+        assert provisional.selected_video_reason == "ambiguous_unselected"
     else:
         raise AssertionError("multiple video streams without a default must be refused")

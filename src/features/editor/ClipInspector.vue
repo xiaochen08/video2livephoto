@@ -105,8 +105,8 @@ const ms = (us: number) => Math.round(us / 1000)
 
     <InspectorSection title="范围" :aside="`${(clip.end_frame - clip.start_frame).toLocaleString()} 帧`">
       <dl class="ci__dl">
-        <ParamRow label="起点" mono>{{ formatTime(frameToUs(clip.start_frame, s)) }} <span class="muted">#{{ clip.start_frame }}</span></ParamRow>
-        <ParamRow label="终点（不含）" mono>{{ formatTime(frameToUs(clip.end_frame, s)) }} <span class="muted">#{{ clip.end_frame }}</span></ParamRow>
+        <ParamRow label="起点" mono>{{ formatTime(frameToUs(clip.start_frame, s, clip.start_pts)) }} <span class="muted">#{{ clip.start_frame }}</span></ParamRow>
+        <ParamRow label="终点（不含）" mono>{{ formatTime(frameToUs(clip.end_frame, s, clip.end_pts)) }} <span class="muted">#{{ clip.end_frame }}</span></ParamRow>
         <ParamRow label="时长" mono>{{ formatDuration(dur) }}</ParamRow>
       </dl>
       <div class="ci__btns">

@@ -9,6 +9,7 @@ const { SystemLogger } = require("./logger.cjs");
 class PythonBridge {
   constructor(logger) {
     this.pending = new Map();
+    this.eventHandlers = new Set();
     this.sequence = 0;
     this.process = null;
     this.logger = logger;
@@ -45,6 +46,10 @@ class PythonBridge {
     lines.on("line", (line) => {
       try {
         const response = JSON.parse(line);
+        if (response && typeof response.event === "string") {
+          for (const handler of this.eventHandlers) handler(response);
+          return;
+        }
         const pending = this.pending.get(response.id);
         if (pending) {
           this.pending.delete(response.id);
@@ -64,6 +69,11 @@ class PythonBridge {
       for (const reject of this.pending.values()) reject(new Error("Python service exited"));
       this.pending.clear();
     });
+  }
+
+  onEvent(handler) {
+    this.eventHandlers.add(handler);
+    return () => this.eventHandlers.delete(handler);
   }
 
   request(method, params = {}) {
@@ -109,7 +119,19 @@ class PythonBridge {
 let appLogger;
 const bridge = new PythonBridge(null);
 
+const ALLOWED_REQUEST_METHODS = new Set([
+  "ping", "connect", "import", "open", "state", "frame_window", "preview_frame", "add_cut", "move_cut", "delete_cut", "merge_segments", "set_segment_audio", "set_all_audio", "mark_cut_checked", "undo", "redo", "confirm_export", "start_export", "export_status", "pause_export", "resume_export", "confirm_recovery", "cancel_export", "retry_export",
+  "projects.listRecent", "projects.open", "projects.rename", "projects.removeRecent", "projects.save", "projects.relocateSource", "media.probe", "analysis.start", "analysis.result", "analysis.cancel", "analysis.reanalyze", "preview.getSource", "preview.getFrame", "preview.releaseFrame", "timeline.apply", "timeline.undo", "timeline.redo", "export.preflight", "export.createBatch", "tasks.subscribe", "tasks.unsubscribe", "tasks.getBatch", "tasks.listBatches", "tasks.pauseQueue", "tasks.resumeQueue", "tasks.cancelJob", "tasks.stopBatch", "tasks.retryFailed", "recovery.inspect", "recovery.continueRemaining", "recovery.dismiss", "files.readReport", "files.openArtifact", "files.revealOutput", "files.pickOutputDir", "settings.get", "settings.update", "settings.cacheInfo", "settings.clearCache", "diagnostics.info", "diagnostics.logs", "diagnostics.exportBundle", "app.quit",
+]);
+
+function assertRequestAllowed(event, method, params) {
+  if (!BrowserWindow.fromWebContents(event.sender)) throw new Error("IPC_SENDER_INVALID");
+  if (!ALLOWED_REQUEST_METHODS.has(method)) throw new Error(`IPC_METHOD_NOT_ALLOWED: ${method}`);
+  if (!params || typeof params !== "object" || Array.isArray(params)) throw new Error("IPC_PARAMS_INVALID");
+}
+
 function createWindow() {
+  let allowClose = false;
   const win = new BrowserWindow({
     width: 1380,
     height: 900,
@@ -125,7 +147,13 @@ function createWindow() {
   win.webContents.on("render-process-gone", (_event, details) => appLogger?.error("renderer.process_gone", details));
   win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => appLogger?.error("renderer.load_failed", { errorCode, errorDescription, validatedURL }));
   win.on("closed", () => appLogger?.info("window.closed"));
+  win.on("close", (event) => {
+    if (allowClose) return;
+    event.preventDefault();
+    win.webContents.send("m3:event", { event: "v2lp:app:close-requested", payload: {} });
+  });
   appLogger?.info("window.created", { width: 1380, height: 900 });
+  win.__allowClose = () => { allowClose = true; };
   return win;
 }
 
@@ -147,9 +175,20 @@ app.whenReady().then(() => {
   appLogger.info("app.ready", { version: app.getVersion(), platform: process.platform, arch: process.arch });
   process.on("uncaughtException", (error) => appLogger.error("process.uncaught_exception", {}, error));
   process.on("unhandledRejection", (reason) => appLogger.error("process.unhandled_rejection", { reason: String(reason) }));
+  bridge.onEvent((event) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send("m3:event", event);
+    }
+  });
   bridge.start();
-  ipcMain.handle("m3:request", (_event, method, params) => bridge.request(method, params));
-  ipcMain.handle("m3:pick-file", async (_event, options = {}) => {
+  ipcMain.handle("m3:request", (event, method, params = {}) => {
+    assertRequestAllowed(event, method, params);
+    return bridge.request(method, params);
+  });
+  ipcMain.handle("m3:pick-file", async (event, options = {}) => {
+    if (!BrowserWindow.fromWebContents(event.sender)) throw new Error("IPC_SENDER_INVALID");
+    if (!options || typeof options !== "object" || Array.isArray(options)) throw new Error("PICK_FILE_OPTIONS_INVALID");
+    if (options.mode && !new Set(["open", "save", "directory"]).has(options.mode)) throw new Error("PICK_FILE_MODE_INVALID");
     if (options.mode === "directory") {
       const result = await dialog.showOpenDialog({
         title: options.title || "选择文件夹",
@@ -172,6 +211,12 @@ app.whenReady().then(() => {
       filters: options.filters || [{ name: "视频文件", extensions: ["mp4", "mov", "m4v"] }],
     });
     return result.canceled ? null : result.filePaths[0] || null;
+  });
+  ipcMain.handle("m3:quit", (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) throw new Error("IPC_SENDER_INVALID");
+    win.__allowClose?.();
+    app.quit();
   });
   createWindow();
   app.on("activate", () => {

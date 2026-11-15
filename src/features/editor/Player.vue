@@ -23,7 +23,11 @@ const stream = session.stream
 const project = session.project
 const playing = playhead.isPlaying
 const frameCount = computed(() => session.timeline.value?.frame_count ?? 0)
-const totalUs = computed(() => (stream.value ? framesToUs(frameCount.value, stream.value.frame_rate) : 0))
+const totalUs = computed(() => {
+  const s = stream.value
+  if (!s) return 0
+  return s.duration_us > 0 ? s.duration_us : framesToUs(frameCount.value, s.frame_rate)
+})
 const portrait = computed(() => !!stream.value && stream.value.height > stream.value.width)
 const focusedClip = computed(() => session.clip(selection.state.focusedId))
 const hasAudio = session.hasAudio

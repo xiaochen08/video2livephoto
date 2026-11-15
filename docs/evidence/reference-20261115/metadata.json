@@ -1,0 +1,19 @@
+{
+  "captured_at": "2026-11-15T17:36:20+08:00",
+  "source_zip_sha256": "F4CFA5662D9EADA3F6E30BBA2509492D0E87F459A2EECDAF397E2FDDEB3109B9",
+  "reference_root": "E:\\LIVE\\_audit\\video2livephoto-ui-reference",
+  "url": "http://127.0.0.1:4173/",
+  "viewport": "1440x900 CSS px",
+  "device_scale_factor": 1,
+  "browser": "Google Chrome C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "node": "v24.22.1",
+  "pnpm": "12.15.0",
+  "install_override": "--config.minimumReleaseAge=0 (same-day @vue/test-utils@2.6.0; lockfile unchanged)",
+  "reference_tests": "30 passed (3 files)",
+  "reference_build": "passed",
+  "notes": [
+    "01-home captures the actual demo recent-project home with dark workflow panels",
+    "02-editor captures the actual demo analysis completion and editor after selecting 婚礼成片_示例.mp4",
+    "03-final repeats the final editor state for diff tooling"
+  ]
+}

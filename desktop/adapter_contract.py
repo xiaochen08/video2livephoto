@@ -69,7 +69,43 @@ def _color(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def media_info(snapshot: ProjectSnapshot) -> dict[str, Any]:
+def _detect_vfr(snapshot: ProjectSnapshot, stream: dict[str, Any], frame_at=None) -> bool:
+    """Detect variable frame spacing from the indexed display PTS values.
+
+    Container frame-rate hints are not authoritative for VFR media.  Sampling
+    short adjacent windows from the persisted frame index keeps project-open
+    responses bounded while still switching the renderer to PTS durations when
+    the actual timeline has non-uniform spacing.
+    """
+    if frame_at is None or int(stream.get("index", -1)) != int((snapshot.probe or {}).get("selected_video_stream", -2)):
+        return False
+    count = int(snapshot.frame_count)
+    if count < 4:
+        return False
+    points: list[int] = []
+    for center in {0, count // 2, count - 1}:
+        points.extend(range(max(0, center - 2), min(count, center + 3)))
+    timestamps: list[tuple[int, int]] = []
+    for index in sorted(set(points)):
+        try:
+            item = frame_at(index)
+            value = item.best_effort_pts if item.best_effort_pts is not None else item.pts
+            if value is not None:
+                timestamps.append((index, int(value)))
+        except Exception:
+            continue
+    deltas = [
+        (right_pts - left_pts) / (right_index - left_index)
+        for (left_index, left_pts), (right_index, right_pts) in zip(timestamps, timestamps[1:])
+        if right_index > left_index and right_pts >= left_pts
+    ]
+    if len(deltas) < 3:
+        return False
+    smallest, largest = min(deltas), max(deltas)
+    return largest - smallest > max(1.0, largest * 0.01)
+
+
+def media_info(snapshot: ProjectSnapshot, frame_at=None) -> dict[str, Any]:
     probe = snapshot.probe or {}
     streams = list(probe.get("streams") or [])
     selected = int(probe.get("selected_video_stream", -1))
@@ -91,17 +127,18 @@ def media_info(snapshot: ProjectSnapshot) -> dict[str, Any]:
             rotation = int(stream.get("rotation") or 0) % 360
             if rotation not in {0, 90, 180, 270}:
                 rotation = 0
+            stream_index = int(stream.get("index", -1))
             videos.append(
                 {
-                    "stream_index": int(stream.get("index", -1)),
+                    "stream_index": stream_index,
                     "codec": str(stream.get("codec_name") or "unknown"),
                     "width": int(stream.get("width") or 0),
                     "height": int(stream.get("height") or 0),
                     "display_aspect": aspect,
                     "rotation_deg": rotation,
                     "frame_rate": fps,
-                    "vfr": False,
-                    "frame_count": snapshot.frame_count if int(stream.get("index", -1)) == selected else 0,
+                    "vfr": _detect_vfr(snapshot, stream, frame_at),
+                    "frame_count": snapshot.frame_count if stream_index == selected else 0,
                     "time_base": time_base,
                     "duration_us": int(round(float(stream.get("duration_seconds") or duration_seconds or 0) * 1_000_000)),
                     "color": _color(stream.get("color") or {}),
@@ -178,6 +215,11 @@ def _timeline(snapshot: ProjectSnapshot, frame_at) -> dict[str, Any]:
             if segment.end_index < snapshot.frame_count:
                 end = frame_at(segment.end_index)
                 end_pts = _pts(end.best_effort_pts if end.best_effort_pts is not None else end.pts)
+            elif snapshot.frame_count > 0:
+                last = frame_at(snapshot.frame_count - 1)
+                last_pts = last.best_effort_pts if last.best_effort_pts is not None else last.pts
+                if last_pts is not None and last.duration is not None:
+                    end_pts = _pts(last_pts + last.duration)
         except Exception:
             pass
         cover = segment.cover_frame_index if segment.cover_frame_index is not None else segment.start_index
@@ -211,7 +253,7 @@ def project(snapshot: ProjectSnapshot, service) -> dict[str, Any]:
         "schema_version": 1,
         "name": Path(snapshot.source_path).stem,
         "source": source_identity(snapshot),
-        "media": media_info(snapshot),
+        "media": media_info(snapshot, service.frame_at),
         "analysis_version": 1,
         "edit_version": revision,
         "saved_edit_version": revision,

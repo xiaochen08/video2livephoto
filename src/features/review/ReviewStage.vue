@@ -122,7 +122,7 @@ watch(
           <StatusTag v-if="cut.review === 'pending'" :label="cut.skipped ? '已跳过 · 仍待检查' : '待检查'" tone="warning" icon="dot" size="sm" />
           <StatusTag v-else label="已确认" tone="success" icon="check" size="sm" />
           <span class="small secondary num">
-            切点 <span class="mono">#{{ cut.frame }}</span> · {{ formatTime(frameToUs(cut.frame, s)) }}
+            切点 <span class="mono">#{{ cut.frame }}</span> · {{ formatTime(frameToUs(cut.frame, s, cut.pts)) }}
             <template v-if="position >= 0"> · 第 {{ position + 1 }} / {{ pending.length }} 处待检查</template>
           </span>
         </div>
@@ -143,7 +143,7 @@ watch(
         <figure class="rframe">
           <FrameImage :project-id="project.project_id" :frame="cut.frame" size="full" fit="contain" :lazy="false" :alt="`后一段第一帧 #${cut.frame}`" />
           <figcaption class="small">
-            <span>后一段第一帧</span><span class="mono num">#{{ cut.frame }} · {{ formatTime(frameToUs(cut.frame, s)) }}</span>
+            <span>后一段第一帧</span><span class="mono num">#{{ cut.frame }} · {{ formatTime(frameToUs(cut.frame, s, cut.pts)) }}</span>
           </figcaption>
         </figure>
       </div>

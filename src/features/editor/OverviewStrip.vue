@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useActions, useApp } from '@/app/context'
 import { CUT_KIND_LABEL } from '@/domain/clipHints'
 import { padIndex } from '@/domain/naming'
-import { formatTime, framesToUs } from '@/domain/time'
+import { clipDurationUs, formatTime } from '@/domain/time'
 
 /**
  * Whole-video overview (direction C): one segment per clip, yellow dots for cuts that need review,
@@ -28,9 +28,6 @@ function seek(e: MouseEvent) {
   const r = el.getBoundingClientRect()
   playhead.requestSeek(Math.floor(((e.clientX - r.left) / r.width) * (fc.value - 1)))
 }
-function rate() {
-  return session.stream.value!.frame_rate
-}
 </script>
 
 <template>
@@ -43,7 +40,7 @@ function rate() {
       :class="{ on: selection.state.focusedId === c.clip_id, sel: selection.selectedSet.value.has(c.clip_id), off: !c.export_selected, tiny: (c.end_frame - c.start_frame) / fc < 0.004 }"
       :style="{ left: pct(c.start_frame) + '%', width: pct(c.end_frame - c.start_frame) + '%' }"
       :aria-label="`片段 ${padIndex(c.display_index)}`"
-      v-tip="`片段 ${padIndex(c.display_index)} · ${formatTime(framesToUs(c.end_frame - c.start_frame, rate()))}`"
+      v-tip="`片段 ${padIndex(c.display_index)} · ${formatTime(clipDurationUs(c, session.stream.value!))}`"
       @click.stop="actions.focusClip(c.clip_id)"
     ></button>
     <button

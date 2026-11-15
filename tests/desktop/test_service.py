@@ -135,6 +135,27 @@ def test_timeline_editing_undo_redo_and_contiguous_ranges(
         service.close()
 
 
+def test_set_segment_bounds_is_atomic_and_single_undo_step(
+    small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path
+) -> None:
+    service = _service(small_mp4, ffmpeg_path, ffprobe_path, tmp_path)
+    try:
+        service.add_cut(5, needs_review=False)
+        service.add_cut(12, needs_review=False)
+        target = service.snapshot.segments[1]
+        original = [(item.start_index, item.end_index) for item in service.snapshot.segments]
+        service.set_segment_bounds(target.clip_id, 7, 14)
+        assert [(item.start_index, item.end_index) for item in service.snapshot.segments] == [
+            (0, 7),
+            (7, 14),
+            (14, service.snapshot.frame_count),
+        ]
+        service.undo()
+        assert [(item.start_index, item.end_index) for item in service.snapshot.segments] == original
+    finally:
+        service.close()
+
+
 def test_unreviewed_cut_requires_explicit_export_confirmation(
     small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path
 ) -> None:

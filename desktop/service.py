@@ -62,6 +62,7 @@ class M3ProjectService:
         detector: DetectionProvider | None = None,
         token: CancellationToken | None = None,
         timeout_seconds: float = 3600.0,
+        video_stream_index: int | None = None,
     ) -> "M3ProjectService":
         source = Path(source_path).resolve(strict=True)
         project = Path(project_path).resolve()
@@ -74,6 +75,7 @@ class M3ProjectService:
             toolchain=selected_toolchain,
             token=token,
             timeout_seconds=min(timeout_seconds, 120.0),
+            selected_video_stream=video_stream_index,
         )
         index = build_frame_index(
             source,
@@ -81,6 +83,7 @@ class M3ProjectService:
             toolchain=selected_toolchain,
             token=token,
             timeout_seconds=timeout_seconds,
+            selected_video_stream=video_stream_index,
         )
         if not index.index_path or index.status != "complete":
             raise M3ProjectError(
@@ -227,6 +230,7 @@ class M3ProjectService:
                 "FRAME_TIMESTAMP_UNAVAILABLE", "当前帧缺少可用时间戳。"
             )
         width = max(160, min(int(width), 1280))
+        selected_stream = int((self.snapshot.probe or {}).get("selected_video_stream", 0))
         result = subprocess.run(
             [
                 self.toolchain.ffmpeg.path,
@@ -237,7 +241,7 @@ class M3ProjectService:
                 "-i",
                 self.snapshot.source_path,
                 "-map",
-                "0:v:0",
+                f"0:{selected_stream}",
                 "-an",
                 "-sn",
                 "-dn",
@@ -382,6 +386,69 @@ class M3ProjectService:
             cut.needs_review = False
             cut.checked = True
             self._rebuild_segments()
+
+        return self._change(mutate)
+
+    def set_segment_bounds(
+        self, clip_id: str, start_index: int, end_index: int
+    ) -> ProjectSnapshot:
+        """Move both boundaries of one segment in a single revision.
+
+        This is used by slide/reset gestures so a multi-boundary edit is
+        validated, persisted, and undoable as one transaction.
+        """
+
+        def mutate() -> None:
+            segments = sorted(self.snapshot.segments, key=lambda item: item.start_index)
+            try:
+                position = next(i for i, item in enumerate(segments) if item.clip_id == clip_id)
+            except StopIteration as exc:
+                raise M3ProjectError("SEGMENT_NOT_FOUND", "找不到要调整的片段。") from exc
+            segment = segments[position]
+            start = int(start_index)
+            end = int(end_index)
+            if end <= start:
+                raise M3ProjectError("INVALID_FRAME_RANGE", "片段范围必须至少包含一帧。")
+            if start < 0 or end > self.snapshot.frame_count:
+                raise M3ProjectError("INVALID_FRAME_RANGE", "片段范围超出视频帧范围。")
+            if position == 0:
+                if start != 0:
+                    raise M3ProjectError("CUT_OVERLAP", "第一个片段必须从视频开头开始。")
+            elif start <= segments[position - 1].start_index or start >= end:
+                raise M3ProjectError("CUT_OVERLAP", "开头边界会造成空片段或重叠。")
+            if position == len(segments) - 1:
+                if end != self.snapshot.frame_count:
+                    raise M3ProjectError("CUT_OVERLAP", "最后一个片段必须延伸到视频结尾。")
+            elif end <= start or end >= segments[position + 1].end_index:
+                raise M3ProjectError("CUT_OVERLAP", "结尾边界会造成空片段或重叠。")
+
+            left_cut = next((cut for cut in self.snapshot.cuts if cut.boundary_index == segment.start_index), None)
+            right_cut = next((cut for cut in self.snapshot.cuts if cut.boundary_index == segment.end_index), None)
+            if position > 0 and left_cut is None:
+                raise M3ProjectError("CUT_NOT_FOUND", "找不到片段的开头切点。")
+            if position < len(segments) - 1 and right_cut is None:
+                raise M3ProjectError("CUT_NOT_FOUND", "找不到片段的结尾切点。")
+
+            if left_cut is not None:
+                left_cut.boundary_index = start
+                left_cut.origin = "manual"
+                left_cut.kind = "manual"
+                left_cut.needs_review = False
+                left_cut.checked = True
+            if right_cut is not None:
+                right_cut.boundary_index = end
+                right_cut.origin = "manual"
+                right_cut.kind = "manual"
+                right_cut.needs_review = False
+                right_cut.checked = True
+
+            if position > 0:
+                segments[position - 1].end_index = start
+            segment.start_index = start
+            segment.end_index = end
+            if position < len(segments) - 1:
+                segments[position + 1].start_index = end
+            self.snapshot.segments = segments
 
         return self._change(mutate)
 
@@ -544,24 +611,35 @@ class M3ProjectService:
     def undo(self) -> ProjectSnapshot:
         if not self._undo:
             raise M3ProjectError("UNDO_EMPTY", "没有可撤销的编辑。")
+        current_revision = self.snapshot.saved_revision
         self._redo.append(copy.deepcopy(self.snapshot))
         self.snapshot = self._undo.pop()
+        # History restores content, but the persisted edit version is a new
+        # event.  Keeping it monotonic prevents the renderer from discarding
+        # the undo result as stale.
+        self.snapshot.saved_revision = current_revision
         self.store.save(self.snapshot)
         return self.snapshot
 
     def redo(self) -> ProjectSnapshot:
         if not self._redo:
             raise M3ProjectError("REDO_EMPTY", "没有可重做的编辑。")
+        current_revision = self.snapshot.saved_revision
         self._undo.append(copy.deepcopy(self.snapshot))
         self.snapshot = self._redo.pop()
+        self.snapshot.saved_revision = current_revision
         self.store.save(self.snapshot)
         return self.snapshot
 
     def _change(self, mutate: Callable[[], None]) -> ProjectSnapshot:
         before = copy.deepcopy(self.snapshot)
-        mutate()
-        self._validate()
-        self.store.save(self.snapshot)
+        try:
+            mutate()
+            self._validate()
+            self.store.save(self.snapshot)
+        except Exception:
+            self.snapshot = before
+            raise
         self._undo.append(before)
         self._redo.clear()
         return self.snapshot

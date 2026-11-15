@@ -1,0 +1,20 @@
+Final local verification (2026-11-15)
+
+py -3 -m pytest -q
+  PASS: 90 passed in 19.87s
+
+npm test
+  PASS: Vite demo build (1947 modules), M3 IPC selftest, System logger selftest
+
+npm run typecheck
+  PASS: vue-tsc --noEmit -p tsconfig.json
+
+npm run build:desktop
+  PASS: Vite desktop build (1935 modules); no DemoAdapter/demo media in the desktop bundle
+
+node --check electron/main.cjs
+node --check electron/preload.cjs
+  PASS
+
+git diff --check
+  PASS

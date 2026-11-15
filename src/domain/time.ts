@@ -41,7 +41,8 @@ export function clipDurationUs(clip: Clip, stream: VideoStreamInfo): number {
   return framesToUs(clipFrames(clip), stream.frame_rate)
 }
 
-export function frameToUs(frame: number, stream: VideoStreamInfo): number {
+export function frameToUs(frame: number, stream: VideoStreamInfo, pts: string | null = null): number {
+  if (stream.vfr && pts !== null) return ptsToUs(pts, stream.time_base)
   return framesToUs(frame, stream.frame_rate)
 }
 

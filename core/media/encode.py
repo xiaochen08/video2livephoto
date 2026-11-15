@@ -349,6 +349,7 @@ def encode_segment(
     cpu_encoder: str = "libx264",
     token: CancellationToken | None = None,
     timeout_seconds: float = 3600.0,
+    video_stream_index: int | None = None,
 ) -> SegmentEncodeResult:
     source = Path(source_path)
     destination = Path(output_path)
@@ -386,7 +387,12 @@ def encode_segment(
     end_pts = (
         last_pts + duration_ticks if duration_ticks and duration_ticks > 0 else last_pts
     )
-    probe = probe_media(source, toolchain=toolchain, token=token)
+    probe = probe_media(
+        source,
+        toolchain=toolchain,
+        token=token,
+        selected_video_stream=stream_index if video_stream_index is None else video_stream_index,
+    )
     # "Preserve audio" means preserve every source audio stream; a silent
     # source is a valid input and must not fail merely because no audio stream
     # exists to map.

@@ -1,0 +1,8 @@
+Motion recording status (2026-11-15)
+
+Status: NOT RUN / BLOCKED BY LOCAL TOOLING
+
+The visual reference and migrated renderer were captured as equal-viewport PNG
+states, and the 50% overlays/difference images are present beside this file.
+Playwright video recording was attempted but the local Playwright ffmpeg cache
+did not contain the requested encoder binary. No video file is claimed.

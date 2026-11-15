@@ -55,7 +55,7 @@ function pick(c: Cut) {
             <span class="mono">#{{ c.frame }}</span> · {{ CUT_KIND_LABEL[c.kind] }}
             <span v-if="c.skipped && c.review === 'pending'" class="ritem__skip small">已跳过</span>
           </span>
-          <span class="small muted num">{{ formatTime(frameToUs(c.frame, session.stream.value!)) }}<template v-if="c.confidence !== null"> · 置信 {{ c.confidence.toFixed(2) }}</template><template v-else-if="c.review === 'pending'"> · 建议检查</template></span>
+          <span class="small muted num">{{ formatTime(frameToUs(c.frame, session.stream.value!, c.pts)) }}<template v-if="c.confidence !== null"> · 置信 {{ c.confidence.toFixed(2) }}</template><template v-else-if="c.review === 'pending'"> · 建议检查</template></span>
         </div>
       </li>
     </ul>

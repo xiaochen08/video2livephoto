@@ -90,6 +90,7 @@ class JsonlIpcServer:
         self._analysis_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="v2lp-analysis")
         self._analysis_tasks: dict[str, dict[str, Any]] = {}
         self._analysis_by_request: dict[str, str] = {}
+        self._analysis_epoch = 0
         self._subscriptions: set[str] = set()
         self._batch_meta: dict[str, dict[str, Any]] = {}
         self._task_snapshots: dict[str, dict[str, Any]] = {}
@@ -221,9 +222,11 @@ class JsonlIpcServer:
         snapshot = job.snapshot or {}
         segment = snapshot.get("segment") or {}
         result = job.result or {}
+        committed_paths = [str(item) for item in (result.get("target_paths") or [])]
+        committed_paths.extend([str(result.get("manifest_path"))] if result.get("manifest_path") else [])
         artifacts = []
-        for kind, path_key in (("mp4", "video_path"), ("jpg", "jpg_path"), ("mov", "mov_path")):
-            value = result.get(path_key)
+        for kind, suffixes in (("mp4", (".mp4",)), ("jpg", (".jpg", ".jpeg")), ("mov", (".mov",))):
+            value = next((path for path in committed_paths if Path(path).suffix.lower() in suffixes), None)
             name = Path(str(value)).name if value else f"{job.clip_id}.{kind}"
             artifacts.append(
                 {
@@ -451,6 +454,17 @@ class JsonlIpcServer:
             return candidate.resolve()
         raise M3ProjectError("PROJECT_NOT_FOUND", f"找不到项目：{value}")
 
+    @staticmethod
+    def _resolve_media_path(params: dict[str, Any]) -> Path:
+        file_ref = params.get("file") if isinstance(params.get("file"), dict) else {}
+        candidate = str(params.get("source_path") or file_ref.get("display_path") or "")
+        if not candidate:
+            raise M3ProjectError("MEDIA_READ_DENIED", "没有可读取的媒体引用。")
+        path = Path(candidate).expanduser().resolve()
+        if not path.is_file() or path.suffix.lower() not in {".mp4", ".mov", ".m4v"}:
+            raise M3ProjectError("MEDIA_READ_DENIED", "媒体引用无效或扩展名不受支持。")
+        return path
+
     def _ensure_project(self, project_id: str | None = None) -> M3ProjectService:
         if project_id and (self.service is None or self.service.snapshot.project_id != project_id):
             path = self._resolve_project_path(project_id)
@@ -480,34 +494,43 @@ class JsonlIpcServer:
             },
         }
 
-    def _run_analysis(self, analysis_id: str, params: dict[str, Any], token: CancellationToken) -> dict[str, Any]:
-        source_path = str(params["source_path"])
+    def _run_analysis(self, analysis_id: str, params: dict[str, Any], token: CancellationToken, epoch: int) -> dict[str, Any]:
+        source_path = str(self._resolve_media_path(params))
+        request_id = str(params.get("request_id") or "")
         project_path = Path(str(params.get("project_path") or ""))
         if not project_path:
             root = Path(os.environ.get("VIDEO2LIVEPHOTO_PROJECT_DIR", str(Path.home() / ".video2livephoto" / "projects")))
             root.mkdir(parents=True, exist_ok=True)
             project_path = root / f"{uuid.uuid4()}.sqlite3"
         cache_root = params.get("cache_root") or str(project_path.with_suffix(".m1-cache"))
-        self._emit("v2lp:analysis:event", {"analysis_id": analysis_id, "seq": 1, "stages": [{"id": "probe", "status": "running", "progress": None, "note": None}], "shots_found": None, "slow_hint": None})
+        selected_stream = None if params.get("video_stream_index") is None else int(params["video_stream_index"])
+        if selected_stream is not None:
+            cache_path = Path(str(cache_root))
+            cache_root = str(cache_path.with_name(f"{cache_path.name}-stream-{selected_stream}"))
+        self._emit("v2lp:analysis:event", {"analysis_id": analysis_id, "request_id": request_id, "seq": 1, "stages": [{"id": "probe", "status": "running", "progress": None, "note": None}], "shots_found": None, "slow_hint": None})
         try:
             service = M3ProjectService.import_media(
                 source_path,
                 project_path=project_path,
                 cache_root=cache_root,
                 token=token,
+                video_stream_index=selected_stream,
             )
             with self._state_lock:
-                self._close_project()
-                self.service = service
-                self._project_registry[service.snapshot.project_id] = str(project_path.resolve())
-                self._recent_projects = [service.snapshot.project_id] + [item for item in self._recent_projects if item != service.snapshot.project_id]
-                self._configure_queue(project_path)
+                if epoch == self._analysis_epoch:
+                    self._close_project()
+                    self.service = service
+                    self._project_registry[service.snapshot.project_id] = str(project_path.resolve())
+                    self._recent_projects = [service.snapshot.project_id] + [item for item in self._recent_projects if item != service.snapshot.project_id]
+                    self._configure_queue(project_path)
+                else:
+                    service.close()
             result = {"project_id": service.snapshot.project_id, "warnings": [], "project_path": str(project_path.resolve())}
-            self._emit("v2lp:analysis:event", {"analysis_id": analysis_id, "seq": 2, "stages": [{"id": "probe", "status": "done", "progress": None, "note": None}, {"id": "frame_index", "status": "done", "progress": {"done": service.snapshot.frame_count, "total": service.snapshot.frame_count, "unit": "frames"}, "note": None}, {"id": "shot_detect", "status": "done", "progress": None, "note": None}], "shots_found": len(service.snapshot.cuts), "slow_hint": None})
+            self._emit("v2lp:analysis:event", {"analysis_id": analysis_id, "request_id": request_id, "seq": 2, "stages": [{"id": "probe", "status": "done", "progress": None, "note": None}, {"id": "frame_index", "status": "done", "progress": {"done": service.snapshot.frame_count, "total": service.snapshot.frame_count, "unit": "frames"}, "note": None}, {"id": "shot_detect", "status": "done", "progress": None, "note": None}], "shots_found": len(service.snapshot.cuts), "slow_hint": None})
             return result
         except Exception as exc:
             code = getattr(exc, "code", "ANALYSIS_WORKER_EXITED")
-            self._emit("v2lp:analysis:event", {"analysis_id": analysis_id, "seq": 2, "stages": [{"id": "probe", "status": "failed", "progress": None, "note": str(exc)}], "shots_found": None, "slow_hint": None, "error": error_payload(exc)})
+            self._emit("v2lp:analysis:event", {"analysis_id": analysis_id, "request_id": request_id, "seq": 2, "stages": [{"id": "probe", "status": "failed", "progress": None, "note": str(exc)}], "shots_found": None, "slow_hint": None, "error": error_payload(exc)})
             raise M3ProjectError(code, str(exc), details=getattr(exc, "details", {})) from exc
 
     def _start_analysis(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
@@ -521,8 +544,10 @@ class JsonlIpcServer:
                 return {"ok": True, **task["future"].result()}
             return {"ok": True, "analysis_id": analysis_id, "deduplicated": True}
         analysis_id = str(uuid.uuid4())
+        self._analysis_epoch += 1
+        epoch = self._analysis_epoch
         token = CancellationToken()
-        future = self._analysis_executor.submit(self._run_analysis, analysis_id, params, token)
+        future = self._analysis_executor.submit(self._run_analysis, analysis_id, params, token, epoch)
         self._analysis_tasks[analysis_id] = {"future": future, "token": token, "request_id": rid}
         if rid:
             self._analysis_by_request[rid] = analysis_id
@@ -562,6 +587,10 @@ class JsonlIpcServer:
             service.add_cut(int(cmd["frame"]), needs_review=True)
         elif kind == "move_cut":
             service.move_cut(str(cmd["cut_id"]), int(cmd["frame"]))
+        elif kind == "set_clip_bounds":
+            service.set_segment_bounds(
+                str(cmd["clip_id"]), int(cmd["start_frame"]), int(cmd["end_frame"])
+            )
         elif kind == "remove_cut":
             cut = service._cut(str(cmd["cut_id"]))
             segments = sorted(service.snapshot.segments, key=lambda item: item.start_index)
@@ -614,6 +643,7 @@ class JsonlIpcServer:
             raise M3ProjectError("OUTPUT_OVERWRITES_SOURCE", "导出目录不能位于源文件路径内。")
         batch_id = str(uuid.uuid4())
         snapshot_id = str(uuid.uuid4())
+        color_mode = "hdr" if settings.get("color") == "hdr_keep" else "sdr"
         temp_dir = service.store.path.parent / f".{service.store.path.stem}.export-tmp"
         jobs = []
         clip_snapshots = []
@@ -626,7 +656,7 @@ class JsonlIpcServer:
                 "segment": segment.__dict__.copy(),
                 "temp_root": str(temp_dir),
                 "output_dir": str(output_dir),
-                "color_mode": "sdr",
+                "color_mode": color_mode,
             }
             clip_snapshots.append({
                 "clip_id": segment.clip_id,
@@ -715,15 +745,22 @@ class JsonlIpcServer:
             mismatch = [] if accepted else ["identity_mismatch"]
             return {"ok": True, "accepted": accepted, "identity": source_identity(service.snapshot), "mismatch": mismatch}
         if method == "media.probe":
-            source_path = str(params.get("source_path") or (params.get("file") or {}).get("display_path") or "")
-            if not source_path:
-                raise M3ProjectError("MEDIA_READ_DENIED", "没有可读取的媒体引用。")
-            result = probe_media(source_path)
+            source_path = self._resolve_media_path(params)
+            result = probe_media(source_path, allow_ambiguous=True)
             raw = result.to_dict()
             pseudo = SimpleNamespace(probe=raw, frame_count=0, source_identity={})
-            return {"ok": True, "probe": {"file": params.get("file"), "media": media_info(pseudo), "notes": [{"code": item, "message": item} for item in raw.get("diagnostics", [])], "needs_stream_choice": len(media_info(pseudo)["video_streams"]) > 1}}
+            probe_media_info = media_info(pseudo)
+            needs_stream_choice = result.selected_video_reason == "ambiguous_unselected"
+            return {"ok": True, "probe": {"file": params.get("file"), "media": probe_media_info, "notes": [{"code": "AMBIGUOUS_VIDEO_STREAM" if needs_stream_choice else item, "message": item} for item in raw.get("diagnostics", [])], "needs_stream_choice": needs_stream_choice}}
         if method == "analysis.start":
             return self._start_analysis(request, params)
+        if method == "analysis.result":
+            analysis_id = str(params.get("analysis_id") or "")
+            task = self._analysis_tasks.get(analysis_id)
+            if task is None:
+                raise M3ProjectError("ANALYSIS_NOT_FOUND", "分析任务不存在。")
+            result = task["future"].result()
+            return {"ok": True, **result}
         if method == "analysis.cancel":
             analysis_id = str(params.get("analysis_id") or "")
             task = self._analysis_tasks.get(analysis_id)
@@ -814,7 +851,7 @@ class JsonlIpcServer:
             service = self._ensure_project(str(params.get("project_id") or ""))
             jobs = [job for job in (self.queue_store.list() if self.queue_store else []) if (job.snapshot or {}).get("project_id") == service.snapshot.project_id and job.state == QueueState.INTERRUPTED]
             for index, job in enumerate(jobs, 1):
-                self._emit("v2lp:recovery:progress", {"checked": index, "total": len(jobs), "current": job.job_id})
+                self._emit("v2lp:recovery:progress", {"project_id": service.snapshot.project_id, "checked": index, "total": len(jobs), "current": job.job_id})
             return {"ok": True, "summary": {"project_id": service.snapshot.project_id, "batch_id": None, "interrupted_at": datetime.now(timezone.utc).isoformat(), "verified_success": [], "needs_redo": [{"clip_id": job.clip_id, "display_index": int((job.snapshot.get("segment") or {}).get("output_number", 0)), "reason": job.error_message or "任务中断"} for job in jobs], "reusable_intermediate": [], "needs_relocate": [], "commit_unknown": [], "pending_actions": ["用户确认后继续剩余任务"] if jobs else []}}
         if method in {"recovery.continueRemaining", "recovery.dismiss"}:
             if method.endswith("dismiss"):

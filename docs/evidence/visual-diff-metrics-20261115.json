@@ -1,0 +1,12 @@
+{
+  "home": {
+    "mean_abs_channel": 0.015,
+    "max_abs_channel": 136,
+    "changed_pixel_ratio_gt8": 0.0004
+  },
+  "editor": {
+    "mean_abs_channel": 0.256,
+    "max_abs_channel": 238,
+    "changed_pixel_ratio_gt8": 0.006
+  }
+}

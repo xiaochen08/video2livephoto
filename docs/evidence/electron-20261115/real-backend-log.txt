@@ -1,0 +1,18 @@
+Real Electron backend verification (sanitised, 2026-11-15)
+
+- Native renderer: window.m3=true; window.v2lpBridge=true.
+- ping: ok=true; protocol=m3.ipc.v1; service=m3-python.
+- analysis.start: one request; returned an analysis id; analysis.result completed
+  with a project id. Repeating the same request id deduplicated to that id.
+- projects.open after renderer reload: ok; real clip list and exact frame previews
+  were visible in the migrated editor.
+- export.preflight: ok; issue=PENDING_REVIEW (warning, user review required).
+- export.createBatch: queue accepted an immutable batch snapshot.
+- export worker: failed with UNKNOWN_COLOR_METADATA because the local synthetic
+  fixture lacks complete color metadata for the default Rec.709 path.
+- output files: none (the failure happened before a committed export).
+- queue follow-up: the completion callback false-success transition was fixed
+  after this run and is covered by tests/queue/test_runner.py.
+
+Runtime SQLite databases and frame caches are preserved outside the repository
+under E:\LIVE\_audit\video2livephoto-ui-evidence\electron-20261115-runtime.

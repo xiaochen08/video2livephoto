@@ -153,25 +153,15 @@ function setEnd(frame: number) {
   playhead.requestSeek(f - 1)
 }
 function slideTo(newStart: number) {
-  const lc = leftCut.value
-  const rc = rightCut.value
   const c = clip.value
-  if (!lc || !rc || !c || !prev.value || !next.value) return
+  if (!leftCut.value || !rightCut.value || !c || !prev.value || !next.value) return
   const len = c.end_frame - c.start_frame
   const s = clampN(Math.round(newStart), prev.value.start_frame + 1, next.value.end_frame - 1 - len)
   if (s === c.start_frame) return
   tent.value = { start: s, end: s + len }
-  // order keeps every intermediate clip ≥ 1 frame
-  const later = s > c.start_frame
-  void run(async () => {
-    if (later) {
-      await moveCut(rc, s + len)
-      await moveCut(lc, s)
-    } else {
-      await moveCut(lc, s)
-      await moveCut(rc, s + len)
-    }
-  })
+  // Both boundaries are submitted as one backend transaction so a failed
+  // slide leaves the confirmed timeline intact and creates one undo entry.
+  void run(() => session.edit({ type: 'set_clip_bounds', clip_id: c.clip_id, start_frame: s, end_frame: s + len }))
 }
 function inside(f: number) {
   return !!clip.value && f > clip.value.start_frame && f < clip.value.end_frame
@@ -207,12 +197,7 @@ function resetClip() {
   const e = entry.value
   const c = clip.value
   if (!e || !c || e.id !== c.clip_id) return
-  void run(async () => {
-    // grow first, then shrink, so the clip never drops below one frame
-    if (leftCut.value && e.start !== c.start_frame && e.start < c.start_frame) await moveCut(leftCut.value, e.start)
-    if (rightCut.value && e.end !== c.end_frame) await moveCut(rightCut.value, e.end)
-    if (leftCut.value && e.start !== session.clip(e.id)?.start_frame) await moveCut(leftCut.value, e.start)
-  })
+  void run(() => session.edit({ type: 'set_clip_bounds', clip_id: c.clip_id, start_frame: e.start, end_frame: e.end }))
 }
 
 /* ------------------------------------ pointer drag ------------------------------------ */
@@ -286,10 +271,21 @@ function up() {
 function cancelDrag(e: KeyboardEvent) {
   if (e.key === 'Escape' && drag.value) {
     e.stopPropagation()
-    drag.value = null
-    frozen.value = null
-    tent.value = null
+    cancelPointer()
   }
+}
+function cancelPointer(e?: PointerEvent) {
+  if (!drag.value) return
+  if (e && trackEl.value?.hasPointerCapture(e.pointerId)) trackEl.value.releasePointerCapture(e.pointerId)
+  drag.value = null
+  frozen.value = null
+  tent.value = null
+}
+function onWindowBlur() {
+  cancelPointer()
+}
+function onVisibilityChange() {
+  if (document.hidden) cancelPointer()
 }
 function onWheel(e: WheelEvent) {
   e.preventDefault()
@@ -364,6 +360,8 @@ onMounted(() => {
   markEntry()
   window.addEventListener('keydown', onKey)
   window.addEventListener('keydown', cancelDrag, true)
+  window.addEventListener('blur', onWindowBlur)
+  document.addEventListener('visibilitychange', onVisibilityChange)
   ro = new ResizeObserver(() => (width.value = trackEl.value?.clientWidth ?? 1000))
   if (trackEl.value) ro.observe(trackEl.value)
   offPh = playhead.subscribe((f) => {
@@ -382,6 +380,8 @@ watch(win, () => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
   window.removeEventListener('keydown', cancelDrag, true)
+  window.removeEventListener('blur', onWindowBlur)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   ro?.disconnect()
   offPh?.()
 })
@@ -456,7 +456,7 @@ const dragLabel = computed(() => {
       <span v-for="k in ticks" :key="k.f" class="t-tick" :class="{ major: !!k.label }" :style="{ left: pct(k.f) + '%' }"><i v-if="k.label" class="num">{{ k.label }}</i></span>
     </div>
 
-    <div ref="trackEl" class="t-track" :class="{ dragging: drag && drag.kind !== 'scrub', slide: mode === 'slide' }" @pointermove="move" @pointerup="up" @pointercancel="up" @wheel="onWheel">
+    <div ref="trackEl" class="t-track" :class="{ dragging: drag && drag.kind !== 'scrub', slide: mode === 'slide' }" @pointermove="move" @pointerup="up" @pointercancel="cancelPointer" @lostpointercapture="cancelPointer" @wheel="onWheel">
       <div class="t-bg" @pointerdown="down('scrub', $event)"></div>
       <div v-for="o in others" :key="o.c.clip_id" class="t-nb" :class="{ adj: o.adj }" :style="{ left: o.left + '%', width: o.width + '%' }">
         <FrameImage :project-id="project.project_id" :frame="o.c.cover.frame" size="thumb" alt="" :show-state="false" />

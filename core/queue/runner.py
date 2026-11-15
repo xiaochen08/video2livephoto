@@ -59,6 +59,7 @@ class QueueRunner:
             max_workers=max_workers, thread_name_prefix="v1-export"
         )
         self._running: dict[str, _Running] = {}
+        self._callbacks: set[str] = set()
         self._lock = threading.RLock()
         self._paused = False
         self._closed = False
@@ -145,6 +146,14 @@ class QueueRunner:
     def _done(self, job: QueueJob, future: Future[Any]) -> None:
         with self._lock:
             self._running.pop(job.job_id, None)
+            self._callbacks.add(job.job_id)
+        try:
+            self._complete_done(job, future)
+        finally:
+            with self._lock:
+                self._callbacks.discard(job.job_id)
+
+    def _complete_done(self, job: QueueJob, future: Future[Any]) -> None:
         try:
             result = future.result()
         except Exception:
@@ -153,6 +162,42 @@ class QueueRunner:
                 exc_info=True,
                 extra={"event": "queue.future.failed", "fields": {"job_id": job.job_id}},
             )
+            self.pump()
+            return
+        try:
+            current = self.store.get(job.job_id)
+        except KeyError:
+            self.logger.error(
+                "queue.job.missing_after_completion",
+                extra={
+                    "event": "queue.job.missing_after_completion",
+                    "fields": {"job_id": job.job_id},
+                },
+            )
+            self.pump()
+            return
+        # _run_one persists worker failures and cancellations before returning
+        # None.  A completion callback must never turn those terminal states
+        # into a false success (or attempt an invalid failed -> failed write).
+        if current.state != QueueState.COMMITTING:
+            if current.state in {
+                QueueState.FAILED,
+                QueueState.INTERRUPTED,
+                QueueState.SKIPPED,
+            }:
+                self.pump()
+                return
+            self.logger.error(
+                "queue.job.unexpected_completion_state",
+                extra={
+                    "event": "queue.job.unexpected_completion_state",
+                    "fields": {
+                        "job_id": job.job_id,
+                        "state": current.state.value,
+                    },
+                },
+            )
+            self.pump()
             return
         succeeded = False
         try:
@@ -260,12 +305,13 @@ class QueueRunner:
             with self._lock:
                 futures = [item.future for item in self._running.values()]
                 running = bool(self._running)
+                callbacks = bool(self._callbacks)
             for future in futures:
                 remaining = (
                     None if deadline is None else max(0.0, deadline - time.monotonic())
                 )
                 future.result(timeout=remaining)
-            if not running:
+            if not running and not callbacks:
                 return
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError("queue runner did not become idle")

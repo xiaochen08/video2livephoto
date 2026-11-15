@@ -1,0 +1,27 @@
+Reference baseline log (2026-11-15)
+
+Input: Video2LivePhoto 桌面工具设计.zip
+SHA-256: F4CFA5662D9EADA3F6E30BBA2509492D0E87F459A2EECDAF397E2FDDEB3109B9
+Reference directory: E:\LIVE\_audit\video2livephoto-ui-reference
+
+Environment:
+- Windows PowerShell 7
+- Node v24.22.1
+- pnpm 12.15.0
+- Chrome C:\Program Files\Google\Chrome\Application\chrome.exe
+- viewport 1440x900 CSS px, DPR 1
+
+Setup:
+- pnpm install --frozen-lockfile initially hit ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION for same-day @vue/test-utils@2.6.0.
+- pnpm install --frozen-lockfile --config.minimumReleaseAge=0 completed without changing pnpm-lock.yaml.
+- pnpm dev -- --host 127.0.0.1 --port 4173 served the reference.
+
+Verification:
+- pnpm test: 3 files, 30 tests passed. The package script emitted the same pnpm policy warning before running; no test failure.
+- pnpm typecheck: passed. Same package-manager warning before the command.
+- pnpm build: passed; Vite demo bundle created.
+- Playwright/Chrome captured 01-home-1440x900.png, 02-editor-1440x900.png, and 03-final-1440x900.png.
+- The reference editor is demo-only; its status text explicitly marks simulated analysis/backend. This is visual evidence only, not real backend acceptance.
+
+Known limitation:
+- Playwright video recording was not enabled because the local Playwright ffmpeg cache was missing the requested binary; a later motion frame sequence will be captured without claiming a video record.

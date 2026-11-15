@@ -90,6 +90,7 @@ def export_queue_job(
         color_mode=str(snapshot.get("color_mode", "warn")),
         prefer_gpu=True,
         token=token,
+        video_stream_index=int(frames[0].stream_index) if frames else None,
     )
     report(0.65, "packaging")
     packed = pack_live_photo(

@@ -134,3 +134,20 @@ def test_runner_does_not_promote_after_failed_worker(tmp_path):
     assert seen == []
     assert runner.worker_limit == 1
     runner.close(cancel_running=False)
+
+
+def test_runner_does_not_commit_success_after_worker_failure(tmp_path):
+    store = QueueStore(tmp_path / "queue.sqlite3")
+    job = store.enqueue(clip_id="failed", snapshot={"n": 1})
+
+    def worker(_job, _cancel, _report):
+        raise RuntimeError("unknown color metadata")
+
+    runner = QueueRunner(store, worker, max_workers=1)
+    runner.pump()
+    runner.wait(timeout=5)
+
+    persisted = store.get(job.job_id)
+    assert persisted.state == QueueState.FAILED
+    assert persisted.error_message == "unknown color metadata"
+    runner.close(cancel_running=False)

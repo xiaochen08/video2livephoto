@@ -7,6 +7,8 @@ import type { AudioMode, ClipId, CutId } from './types'
 export type EditCommand =
   | { type: 'add_cut'; frame: number }
   | { type: 'move_cut'; cut_id: CutId; frame: number }
+  /** Move both boundaries in one backend transaction (slide/reset). */
+  | { type: 'set_clip_bounds'; clip_id: ClipId; start_frame: number; end_frame: number }
   | { type: 'remove_cut'; cut_id: CutId; audio_resolution?: AudioMode }
   | { type: 'merge_clips'; clip_ids: ClipId[]; audio_resolution?: AudioMode }
   | {
@@ -24,6 +26,8 @@ export function commandLabel(cmd: EditCommand): string {
       return '添加切点'
     case 'move_cut':
       return '移动切点'
+    case 'set_clip_bounds':
+      return '调整片段范围'
     case 'remove_cut':
       return '删除切点（合并相邻片段）'
     case 'merge_clips':

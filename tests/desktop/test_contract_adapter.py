@@ -40,6 +40,21 @@ def test_contract_open_and_timeline_returns_string_pts(
     server._close_project()
 
 
+def test_contract_marks_indexed_vfr_and_uses_pts_clip_boundaries(
+    vfr_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    monkeypatch.setattr("desktop.service.Toolchain.discover", lambda: toolchain)
+    server = JsonlIpcServer()
+    imported = server.handle(_request("import", {"source_path": str(vfr_mp4), "project_path": str(tmp_path / "vfr.sqlite3"), "cache_root": str(tmp_path / "vfr-cache")}))
+    project = server.handle(_request("projects.open", {"project_id": imported["project"]["project_id"]}))["result"]["project"]
+    selected = next(item for item in project["media"]["video_streams"] if item["stream_index"] == project["media"]["selected_video_stream"])
+    assert selected["vfr"] is True
+    assert project["timeline"]["clips"][0]["start_pts"] is not None
+    assert project["timeline"]["clips"][-1]["end_pts"] is not None
+    server._close_project()
+
+
 def test_contract_edit_request_id_is_idempotent_and_stale_base_rejected(
     small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -59,6 +74,24 @@ def test_contract_edit_request_id_is_idempotent_and_stale_base_rejected(
     server._close_project()
 
 
+def test_contract_undo_redo_use_monotonic_edit_versions(
+    small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    monkeypatch.setattr("desktop.service.Toolchain.discover", lambda: toolchain)
+    server = JsonlIpcServer()
+    imported = server.handle(_request("import", {"source_path": str(small_mp4), "project_path": str(tmp_path / "history.sqlite3"), "cache_root": str(tmp_path / "history-cache")}))
+    project_id = imported["project"]["project_id"]
+    initial = int(imported["project"]["saved_revision"])
+    applied = server.handle(_request("timeline.apply", {"project_id": project_id, "base_edit_version": initial, "cmd": {"type": "add_cut", "frame": 5}, "request_id": "history-add"}))
+    undone = server.handle(_request("timeline.undo", {"project_id": project_id, "base_edit_version": applied["edit_version"], "request_id": "history-undo"}))
+    redone = server.handle(_request("timeline.redo", {"project_id": project_id, "base_edit_version": undone["edit_version"], "request_id": "history-redo"}))
+    assert initial < applied["edit_version"] < undone["edit_version"] < redone["edit_version"]
+    assert undone["timeline"]["cuts"] == []
+    assert len(redone["timeline"]["cuts"]) == 1
+    server._close_project()
+
+
 def test_analysis_start_is_single_request_and_deduplicates(
     small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -69,7 +102,7 @@ def test_analysis_start_is_single_request_and_deduplicates(
     started = server.handle(_request("analysis.start", params))
     repeated = server.handle(_request("analysis.start", params))
     assert started["analysis_id"] == repeated["analysis_id"]
-    completed = server.handle(_request("analysis.start", {**params, "await_result": True}))
+    completed = server.handle(_request("analysis.result", {"analysis_id": started["analysis_id"], "request_id": params["request_id"]}))
     assert completed["project_id"]
     assert len(server._analysis_by_request) == 1
     server._close_project()

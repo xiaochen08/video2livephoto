@@ -1,0 +1,16 @@
+{
+  "captured_at": "2026-11-15",
+  "source_zip_sha256": "F4CFA5662D9EADA3F6E30BBA2509492D0E87F459A2EECDAF397E2FDDEB3109B9",
+  "prompt_txt_sha256": "69D0DD96E1E9638BBCE66D5DE734DEFF6F3B0C940E05773C6A6FA571E5239783",
+  "viewport": "1440x900 CSS px",
+  "device_scale_factor": 1,
+  "reference_url": "http://127.0.0.1:4173/",
+  "migrated_url": "http://127.0.0.1:4174/",
+  "reference_tests": "30 passed",
+  "visual_diff_metrics": "visual-diff-metrics-20261115.json",
+  "motion_recording": "NOT_RUN_LOCAL_PLAYWRIGHT_FFMPEG_MISSING",
+  "real_electron_screenshots": [
+    "electron-20261115-home.png",
+    "electron-20261115-real-editor.png"
+  ]
+}

@@ -60,7 +60,7 @@ async function confirm() {
         <StatusTag v-if="cut.origin === 'user'" label="手动添加" tone="muted" size="sm" />
       </div>
       <dl class="cut-i__dl">
-        <ParamRow label="位置" mono>{{ formatTime(frameToUs(cut.frame, s)) }} <span class="muted">#{{ cut.frame }}</span></ParamRow>
+        <ParamRow label="位置" mono>{{ formatTime(frameToUs(cut.frame, s, cut.pts)) }} <span class="muted">#{{ cut.frame }}</span></ParamRow>
         <ParamRow label="PTS" :value="cut.pts ?? '待后端补充'" mono />
         <ParamRow v-if="cut.transition" label="过渡范围" mono>#{{ cut.transition.start_frame }} – #{{ cut.transition.end_frame - 1 }}（{{ cut.transition.end_frame - cut.transition.start_frame }} 帧）</ParamRow>
         <ParamRow label="置信信息" :value="cut.confidence === null ? '分析未提供置信分数（建议检查）' : cut.confidence.toFixed(2)" />

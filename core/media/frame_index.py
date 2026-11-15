@@ -72,6 +72,7 @@ def build_frame_index(
     toolchain: Toolchain | None = None,
     token: CancellationToken | None = None,
     timeout_seconds: float = 3600.0,
+    selected_video_stream: int | None = None,
 ) -> FrameIndexReport:
     source = Path(path)
     cache_path = Path(cache_root)
@@ -95,6 +96,7 @@ def build_frame_index(
         toolchain=toolchain,
         token=token,
         timeout_seconds=min(timeout_seconds, 120.0),
+        selected_video_stream=selected_video_stream,
     )
     time_base = probe.video_stream.time_base
     if time_base is None:
