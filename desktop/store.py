@@ -20,7 +20,10 @@ class ProjectStore:
     def create(cls, path: str | Path) -> "ProjectStore":
         project_path = Path(path).resolve()
         project_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(project_path)
+        # Analysis may be executed by the bridge worker and then handed to the
+        # Electron request thread.  The service serializes writes; allow the
+        # hand-off while preserving SQLite's transactional locking.
+        connection = sqlite3.connect(project_path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.executescript(
             """
@@ -63,7 +66,7 @@ class ProjectStore:
         project_path = Path(path).resolve()
         if not project_path.is_file():
             raise M3ProjectError("PROJECT_NOT_FOUND", f"项目文件不存在：{project_path}")
-        connection = sqlite3.connect(project_path)
+        connection = sqlite3.connect(project_path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         try:
             keys = connection.execute("SELECT key FROM project_metadata").fetchall()

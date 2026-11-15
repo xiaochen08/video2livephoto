@@ -11,6 +11,7 @@ from typing import Any
 
 from core.analysis.shot_detection import detect_shots
 from core.media.frame_index import build_frame_index
+from core.media.process import CancellationToken
 from core.media.probe import probe_media
 from core.media.source_identity import capture_identity, identities_match
 from core.media.toolchain import Toolchain, process_creation_flags
@@ -59,17 +60,27 @@ class M3ProjectService:
         cache_root: str | Path | None = None,
         toolchain: Toolchain | None = None,
         detector: DetectionProvider | None = None,
+        token: CancellationToken | None = None,
+        timeout_seconds: float = 3600.0,
     ) -> "M3ProjectService":
         source = Path(source_path).resolve(strict=True)
         project = Path(project_path).resolve()
         if cache_root is None:
             cache_root = project.parent / f".{project.stem}.m1-cache"
         selected_toolchain = toolchain or Toolchain.discover()
-        probe = probe_media(source, toolchain=selected_toolchain)
+        token = token or CancellationToken()
+        probe = probe_media(
+            source,
+            toolchain=selected_toolchain,
+            token=token,
+            timeout_seconds=min(timeout_seconds, 120.0),
+        )
         index = build_frame_index(
             source,
             cache_root=cache_root,
             toolchain=selected_toolchain,
+            token=token,
+            timeout_seconds=timeout_seconds,
         )
         if not index.index_path or index.status != "complete":
             raise M3ProjectError(
@@ -89,6 +100,8 @@ class M3ProjectService:
                 source,
                 frame_index_report=index,
                 toolchain=selected_toolchain,
+                token=token,
+                timeout_seconds=timeout_seconds,
             )
             detector_status = detection.status
             detector_version = detection.schema_version
@@ -433,6 +446,74 @@ class M3ProjectService:
     def set_segment_audio(self, clip_id: str, enabled: bool) -> ProjectSnapshot:
         def mutate() -> None:
             self._segment(clip_id).audio_enabled = bool(enabled)
+
+        return self._change(mutate)
+
+    def set_segment_export(self, clip_id: str, selected: bool) -> ProjectSnapshot:
+        def mutate() -> None:
+            self._segment(clip_id).selected_for_export = bool(selected)
+
+        return self._change(mutate)
+
+    def set_segment_cover(self, clip_id: str, frame_index: int | None) -> ProjectSnapshot:
+        def mutate() -> None:
+            segment = self._segment(clip_id)
+            if frame_index is not None and not segment.start_index <= int(frame_index) < segment.end_index:
+                raise M3ProjectError(
+                    "COVER_OUT_OF_RANGE",
+                    "封面帧必须位于当前片段范围内。",
+                    details={"clip_id": clip_id, "frame": int(frame_index)},
+                )
+            segment.cover_frame_index = None if frame_index is None else int(frame_index)
+
+        return self._change(mutate)
+
+    def set_segment_properties_many(
+        self, clip_ids: Iterable[str], *, audio_enabled: bool | None = None, selected_for_export: bool | None = None
+    ) -> ProjectSnapshot:
+        ids = [str(item) for item in clip_ids]
+
+        def mutate() -> None:
+            for clip_id in ids:
+                segment = self._segment(clip_id)
+                if audio_enabled is not None:
+                    segment.audio_enabled = bool(audio_enabled)
+                if selected_for_export is not None:
+                    segment.selected_for_export = bool(selected_for_export)
+
+        return self._change(mutate)
+
+    def merge_segments_many(
+        self, clip_ids: Iterable[str], *, audio_enabled: bool | None = None
+    ) -> ProjectSnapshot:
+        ids = [str(item) for item in clip_ids]
+        if len(ids) < 2:
+            raise M3ProjectError("MERGE_NOT_CONTIGUOUS", "至少需要两个相邻片段。")
+
+        def mutate() -> None:
+            segments = sorted(self.snapshot.segments, key=lambda item: item.start_index)
+            positions = [next((i for i, item in enumerate(segments) if item.clip_id == clip_id), -1) for clip_id in ids]
+            if any(value < 0 for value in positions) or positions != list(range(positions[0], positions[0] + len(positions))):
+                raise M3ProjectError("MERGE_NOT_CONTIGUOUS", "只能合并相邻且连续的片段。")
+            selected = [segments[index] for index in positions]
+            for left, right in zip(selected, selected[1:]):
+                if left.end_index != right.start_index:
+                    raise M3ProjectError("MERGE_NOT_CONTIGUOUS", "片段范围不连续。")
+            if audio_enabled is None and any(item.audio_enabled != selected[0].audio_enabled for item in selected[1:]):
+                raise AudioConflictError(selected[0].audio_enabled, selected[1].audio_enabled)
+            chosen_audio = selected[0].audio_enabled if audio_enabled is None else bool(audio_enabled)
+            merged = Segment(
+                clip_id=selected[0].clip_id,
+                start_index=selected[0].start_index,
+                end_index=selected[-1].end_index,
+                audio_enabled=chosen_audio,
+                selected_for_export=any(item.selected_for_export for item in selected),
+                cover_frame_index=selected[0].cover_frame_index,
+                output_number=selected[0].output_number,
+            )
+            self.snapshot.segments = segments[: positions[0]] + [merged] + segments[positions[-1] + 1 :]
+            removed_boundaries = {item.end_index for item in selected[:-1]}
+            self.snapshot.cuts = [cut for cut in self.snapshot.cuts if cut.boundary_index not in removed_boundaries]
 
         return self._change(mutate)
 
