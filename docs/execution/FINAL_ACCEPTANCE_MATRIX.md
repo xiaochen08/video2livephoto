@@ -4,7 +4,7 @@
 
 | 项目 | 状态 | 证据 |
 |---|---|---|
-| M1 媒体探测/帧索引/缓存 | PASS（合成与既有 M1 样片）；真实负显示 PTS、ACL、卷级 ENOSPC、外部强杀仍 BLOCKED | `docs/M1_IMPLEMENTATION_REPORT.md`、`docs/M1_FIXTURE_MANIFEST.md`、71 项 Python 回归 |
+| M1 媒体探测/帧索引/缓存 | PASS（合成与既有 M1 样片）；真实负显示 PTS、ACL、卷级 ENOSPC、外部强杀仍 BLOCKED | `docs/M1_IMPLEMENTATION_REPORT.md`、`docs/M1_FIXTURE_MANIFEST.md`、77 项 Python 回归 |
 | M2 硬切/黑场/叠化/短镜头 | PASS（合成回归）；真实婚礼 10 条人工真值和召回率目标 BLOCKED | `docs/M2_DETECTION_REPORT.md` |
 | M3 导入/时间线/逐帧预览/审核 | PASS（Python/IPC/renderer build）；目标 Windows 原生窗口人工验收仍需外部执行 | `docs/M3_DESKTOP.md`、`delivery/v1.0/evidence/m3-empty-import-screen.png` |
 | M4 精准编码/音频/色彩 | PASS（VFR、B 帧、音频开关、GPU 回退、HDR10 合成样片）；复杂婚礼长片 BLOCKED | `docs/M4_M5_MEDIA_EXPORT.md`、`tests/media/test_encode.py` |
