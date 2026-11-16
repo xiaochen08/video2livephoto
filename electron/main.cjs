@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, protocol } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, protocol, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const { createReadStream, existsSync, statSync } = require("node:fs");
@@ -84,7 +84,7 @@ class PythonBridge {
     return () => this.eventHandlers.delete(handler);
   }
 
-  request(method, params = {}) {
+  request(method, params = {}, timeoutMs = 60000) {
     if (!this.process || this.process.killed) return Promise.reject(new Error("Python service is not running"));
     const id = String(++this.sequence);
     const started = Date.now();
@@ -94,7 +94,7 @@ class PythonBridge {
         this.pending.delete(id);
         this.logger?.error("ipc.request.timeout", { request_id: id, method, duration_ms: Date.now() - started });
         reject(new Error(`IPC timeout: ${method}`));
-      }, 60000);
+      }, timeoutMs);
       this.pending.set(id, (response) => {
         clearTimeout(timer);
         if (response.ok) {
@@ -102,7 +102,9 @@ class PythonBridge {
           resolve(response);
         } else {
           const error = Object.assign(new Error(response.error?.message || "IPC error"), response.error || {});
-          this.logger?.error("ipc.request.end", { request_id: id, method, ok: false, duration_ms: Date.now() - started, error_code: error.code }, error);
+          const fields = { request_id: id, method, ok: false, duration_ms: Date.now() - started, error_code: error.code };
+          if (error.code === "PREVIEW_BUSY" || error.code === "PREVIEW_STALE") this.logger?.info("ipc.request.end", fields);
+          else this.logger?.error("ipc.request.end", fields, error);
           reject(error);
         }
       });
@@ -136,7 +138,15 @@ const MEDIA_SOURCE_LIMIT = 32;
 
 function rememberMediaSource(projectId, sourcePath) {
   const existing = mediaSourceTokensByProject.get(projectId);
-  if (existing && mediaSources.has(existing)) return existing;
+  if (existing && mediaSources.has(existing)) {
+    const entry = mediaSources.get(existing);
+    if (entry.sourcePath === sourcePath) return existing;
+    // A project can be relocated while its renderer keeps the same project ID.
+    // Reuse the token, but replace the source path so the protocol never serves
+    // the old file after relocation.
+    entry.sourcePath = sourcePath;
+    return existing;
+  }
   const token = crypto.randomUUID();
   mediaSources.set(token, { projectId, sourcePath });
   mediaSourceTokensByProject.set(projectId, token);
@@ -171,6 +181,32 @@ function playableSourceResponse(response, params) {
       kind: "source",
     },
   };
+}
+
+function absoluteExistingPath(response, method) {
+  const value = typeof response?.path === "string" ? response.path.trim() : "";
+  if (!value || !path.isAbsolute(value) || !existsSync(value)) {
+    const error = new Error(`文件路径无效或不存在：${method}`);
+    error.code = "FILE_PATH_INVALID";
+    throw error;
+  }
+  return value;
+}
+
+async function handleFileAction(method, params) {
+  const response = await bridge.request(method, params);
+  const target = absoluteExistingPath(response, method);
+  const errorText = await shell.openPath(target);
+  if (errorText) {
+    // Windows usually has no default application for .livp.  Keep the file
+    // action useful by revealing the exact committed file instead of turning
+    // a valid export into an IPC error.
+    shell.showItemInFolder(target);
+    appLogger?.info("file.action.fallback", { method, target_path: target, error: errorText });
+    return { ok: true, path: target, fallback: "reveal" };
+  }
+  appLogger?.info("file.action", { method, target_path: target });
+  return { ok: true };
 }
 
 function registerMediaProtocol() {
@@ -278,8 +314,37 @@ app.whenReady().then(() => {
   bridge.start();
   ipcMain.handle("m3:request", async (event, method, params = {}) => {
     assertRequestAllowed(event, method, params);
-    const response = await bridge.request(method, params);
-    return method === "preview.getSource" ? playableSourceResponse(response, params) : response;
+    if (method === "files.openArtifact" || method === "files.revealOutput") {
+      return handleFileAction(method, params);
+    }
+    if (method === "files.pickOutputDir") {
+      const result = await dialog.showOpenDialog({
+        title: "选择导出目录",
+        properties: ["openDirectory", "createDirectory"],
+      });
+      return { ok: true, path: result.canceled ? null : result.filePaths[0] || null };
+    }
+    const bridgeTimeout = method === "analysis.result" ? 3_600_000 : 60_000;
+    try {
+      const response = await bridge.request(method, params, bridgeTimeout);
+      return method === "preview.getSource" ? playableSourceResponse(response, params) : response;
+    } catch (error) {
+      // Preview requests can legitimately finish after a project switch or
+      // while an export owns the decoder.  Return the structured error so the
+      // renderer can settle/retry it without Electron logging an unhandled
+      // rejected IPC invocation to the user's terminal.
+      if (method === "preview.getFrame" && ["PREVIEW_BUSY", "PREVIEW_STALE"].includes(error?.code)) {
+        return {
+          ok: false,
+          error: {
+            code: error.code,
+            message: error.message,
+            details: error.details || {},
+          },
+        };
+      }
+      throw error;
+    }
   });
   ipcMain.handle("m3:request-cancel", (event, previewRequestId) => {
     if (!BrowserWindow.fromWebContents(event.sender)) throw new Error("IPC_SENDER_INVALID");

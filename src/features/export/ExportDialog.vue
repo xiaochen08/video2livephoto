@@ -63,7 +63,7 @@ const muted = computed(() => clips.value.filter((c) => c.audio === 'muted').leng
 
 const stems = computed(() => clips.value.map((c) => fileStem(form.name_base || '未命名', c.display_index)))
 const nameIssues = computed(() => checkNameBase(form.name_base))
-const longest = computed(() => stems.value.reduce((a, b) => (b.length > a.length ? b : a), '') + '.mov')
+const longest = computed(() => stems.value.reduce((a, b) => (b.length > a.length ? b : a), '') + '.livp')
 const batchFolder = computed(() => `livephotos ${sanitizeForFileName(p.value?.name || '项目')} ${folderTimestamp.value || '时间戳'}`)
 const pathIssues = computed(() => checkOutputPath(form.output_dir, longest.value, batchFolder.value))
 const localErrors = computed(() => [...nameIssues.value, ...pathIssues.value].filter((i) => i.level === 'error'))
@@ -180,7 +180,7 @@ function backToReview() {
           <span>个片段参与导出 <span class="muted small">/ 共 {{ total }} 个</span></span>
         </div>
         <p class="small secondary">
-          每个片段生成完整 <strong>MP4</strong>，以及同名配对的 <strong>JPG + MOV</strong> 实况，共 <span class="num">{{ clips.length * 3 }}</span> 个文件，另附导出报告与版本化清单。导出范围按片段勾选，时间线内容不变。
+          每个片段生成完整 <strong>MP4</strong>，以及一个封装好的 <strong>LIVP</strong> 实况文件，共 <span class="num">{{ clips.length * 2 }}</span> 个文件，另附导出报告与版本化清单。LivePhoto/ 下的 LIVP 内部包含配对照片与 MOV，视频片段/ 下的 MP4 保留完整范围。导出范围按片段勾选，时间线内容不变。
         </p>
       </section>
 
@@ -196,9 +196,9 @@ function backToReview() {
           <div class="tree__row"><Folder :size="13" /> {{ form.output_dir || '（未选择）' }}</div>
           <div class="tree__row tree__l1"><Folder :size="13" /> {{ batchFolder }}\</div>
           <div class="tree__row tree__l2"><Folder :size="13" /> LivePhoto\</div>
-          <div v-for="st in stems.slice(0, 2)" :key="'lp' + st" class="tree__row tree__l3">{{ st }}.jpg <span class="muted">+</span> {{ st }}.mov</div>
+          <div v-for="st in stems.slice(0, 2)" :key="'lp' + st" class="tree__row tree__l3">{{ st }}.livp</div>
           <div v-if="stems.length > 3" class="tree__row tree__l3 muted">… 共 {{ stems.length }} 对</div>
-          <div v-if="stems.length > 2" class="tree__row tree__l3">{{ stems[stems.length - 1] }}.jpg <span class="muted">+</span> {{ stems[stems.length - 1] }}.mov</div>
+          <div v-if="stems.length > 2" class="tree__row tree__l3">{{ stems[stems.length - 1] }}.livp</div>
           <div class="tree__row tree__l2"><Folder :size="13" /> 视频片段\</div>
           <div v-for="st in stems.slice(0, 2)" :key="'mp' + st" class="tree__row tree__l3">{{ st }}.mp4</div>
           <div v-if="stems.length > 2" class="tree__row tree__l3 muted">… 共 {{ stems.length }} 个</div>
@@ -248,10 +248,11 @@ function backToReview() {
       </section>
 
       <section v-if="hintCounts.short || hintCounts.long || coverIssues" class="exp__sec">
-        <UiBanner tone="info" title="实况兼容性提醒（不影响导出）">
+        <UiBanner tone="warning" title="实况兼容性提醒（不影响本地导出）">
           <template v-if="hintCounts.short">{{ hintCounts.short }} 个超短片段可能不被识别为实况；</template>
-          <template v-if="hintCounts.long">{{ hintCounts.long }} 个超长片段可能被平台截断；</template>
-          原帧范围都会完整保留，不会补帧、冻结末帧、延长或缩短。
+          <template v-if="hintCounts.long">{{ hintCounts.long }} 个片段超过 3 秒；LivePhoto/ 会自动取前约 3 秒，若要保留片段中间的某一段，请先在时间线裁剪。</template>
+          <template v-if="!hintCounts.long">当前片段未超过 3 秒建议上限。</template>
+          原帧范围都会完整保留，不会自动补帧、冻结末帧、延长或缩短。聊天发送也不会把配对资源自动导入成 iPhone Live Photo。
           <template v-if="coverIssues"> {{ coverIssues }} 个片段的封面越界，将由后端重新生成清晰帧。</template>
         </UiBanner>
       </section>

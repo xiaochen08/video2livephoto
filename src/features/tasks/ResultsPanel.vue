@@ -37,6 +37,11 @@ const counts = computed(() => {
   return r
 })
 const p = session.project
+function livePhotoKind(job: Job): 'livp' | 'jpg' | 'mov' {
+  if (job.artifacts.some((artifact) => artifact.kind === 'livp')) return 'livp'
+  if (job.artifacts.some((artifact) => artifact.kind === 'jpg')) return 'jpg'
+  return 'mov'
+}
 async function copyErr(job: Job) {
   if (!job.error) return
   const text = errorToClipboardText(job.error, `${p.value?.name} · ${job.file_stem}`)
@@ -67,10 +72,12 @@ async function copyErr(job: Job) {
       <div class="row">
         <UiButton size="sm" :icon="FolderOpen" @click="ja.reveal()">打开输出目录</UiButton>
       </div>
-      <UiBanner tone="info" compact>本地文件校验与平台实机播放验证分开记录。iPhone、朋友圈、小红书、抖音的实际播放结果需在真实设备上测试，当前均为「待验证」。</UiBanner>
+      <UiBanner tone="warning" compact>
+        本地校验通过只代表 LIVP 封装、配对标识和文件结构正确，不代表已经进入 iPhone 相册里的 Live Photo。微信、QQ、聊天窗口仍可能压缩、改名或拦截文件；请按“文件”发送 <span class="mono">.livp</span>，不要按图片/视频发送，也不要发送 视频片段/*.mp4。iPhone、朋友圈、小红书、抖音仍需真机测试。
+      </UiBanner>
     </section>
     <div class="results__cols small muted" aria-hidden="true">
-      <span>片段</span><span></span><span>文件</span><span>状态</span><span>产物</span><span>本地校验</span><span>实机</span><span></span>
+      <span>片段</span><span></span><span>文件</span><span>状态</span><span>产物</span><span>配对结构</span><span>实机</span><span></span>
     </div>
     <VirtualList :items="rows" :row-height="56" :key-of="(r: Row) => r.job.clip_id" role="list" aria-label="每个片段的最近导出结果" class="results__list">
       <template #default="{ item }">
@@ -80,12 +87,12 @@ async function copyErr(job: Job) {
           <span class="mono small truncate">{{ item.job.file_stem }} <span class="muted">· v{{ item.batch.snapshot.edit_version }}</span></span>
           <StatusTag size="sm" v-bind="JOB_UI_META[ja.uiOf(item.job, item.batch)]" />
           <ArtifactPills :artifacts="item.job.artifacts" />
-          <StatusTag size="sm" :tone="item.job.verification.local === 'passed' ? 'success' : 'muted'" :label="item.job.verification.local === 'passed' ? '通过' : '未完成'" />
+          <StatusTag size="sm" :tone="item.job.verification.local === 'passed' ? 'success' : 'muted'" :label="item.job.verification.local === 'passed' ? '已校验' : '未完成'" />
           <StatusTag size="sm" tone="muted" label="待验证" />
           <span class="rrow__actions" @click.stop>
-            <IconButton :icon="ExternalLink" size="sm" label="打开 MP4" :disabled="item.job.stage !== 'succeeded'" disabled-reason="尚未成功" @click="ja.open(item.job, 'mp4')" />
+            <IconButton :icon="ExternalLink" size="sm" :label="livePhotoKind(item.job) === 'livp' ? '打开 LIVP' : '打开配对资源'" :disabled="item.job.stage !== 'succeeded'" disabled-reason="尚未成功" @click="ja.open(item.job, livePhotoKind(item.job))" />
             <IconButton :icon="FolderOpen" size="sm" label="定位目录" @click="ja.reveal(item.job)" />
-            <IconButton :icon="FileSearch" size="sm" label="查看本地校验报告" :disabled="!item.job.verification.local_report_id" disabled-reason="尚未生成校验报告" @click="ja.report(item.job)" />
+            <IconButton :icon="FileSearch" size="sm" label="查看配对校验报告" :disabled="!item.job.verification.local_report_id" disabled-reason="尚未生成校验报告" @click="ja.report(item.job)" />
             <IconButton v-if="item.job.error" :icon="Copy" size="sm" label="复制错误信息" @click="copyErr(item.job)" />
             <IconButton v-if="item.job.stage === 'failed'" :icon="RotateCcw" size="sm" label="重试相关任务" @click="ja.retry(item.batch, item.job)" />
           </span>

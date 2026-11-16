@@ -104,7 +104,7 @@ async function exportBundle() {
             @update:model-value="(v) => save({ default_color: v })"
           />
         </div>
-        <p class="small muted">每次导出会在此位置创建独立的“livephotos 项目名 时间戳”文件夹，内部包含 LivePhoto/（JPG + MOV）、视频片段/（MP4）、导出报告与版本化清单。</p>
+        <p class="small muted">每次导出会在此位置创建独立的“livephotos 项目名 时间戳”文件夹，内部包含 LivePhoto/（LIVP）、视频片段/（MP4）、导出报告与版本化清单。</p>
       </section>
 
       <section v-else-if="ui.state.settingsSection === 'preview'" class="set__sec">

@@ -49,7 +49,8 @@ class ProjectStore:
                 audio_enabled INTEGER NOT NULL,
                 selected_for_export INTEGER NOT NULL,
                 cover_frame_index INTEGER,
-                output_number INTEGER NOT NULL
+                output_number INTEGER NOT NULL,
+                name TEXT
             );
             CREATE TABLE IF NOT EXISTS revisions (
                 revision INTEGER PRIMARY KEY,
@@ -58,8 +59,18 @@ class ProjectStore:
             );
             """
         )
+        cls._ensure_segment_name_column(connection)
         connection.commit()
         return cls(project_path, connection)
+
+    @staticmethod
+    def _ensure_segment_name_column(connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(segments)").fetchall()
+        }
+        if "name" not in columns:
+            connection.execute("ALTER TABLE segments ADD COLUMN name TEXT")
 
     @classmethod
     def open(cls, path: str | Path) -> "ProjectStore":
@@ -78,6 +89,8 @@ class ProjectStore:
         if not keys:
             connection.close()
             raise M3ProjectError("PROJECT_INVALID", "项目缺少 M3 元数据。")
+        cls._ensure_segment_name_column(connection)
+        connection.commit()
         return cls(project_path, connection)
 
     def save(self, snapshot: ProjectSnapshot) -> int:
@@ -94,6 +107,7 @@ class ProjectStore:
             "frame_count": snapshot.frame_count,
             "detector_status": snapshot.detector_status,
             "detector_version": snapshot.detector_version,
+            "color_override": snapshot.color_override,
             "saved_revision": revision,
         }
         with self.connection:
@@ -124,7 +138,7 @@ class ProjectStore:
             )
             self.connection.execute("DELETE FROM segments")
             self.connection.executemany(
-                "INSERT INTO segments(clip_id,start_index,end_index,audio_enabled,selected_for_export,cover_frame_index,output_number) VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO segments(clip_id,start_index,end_index,audio_enabled,selected_for_export,cover_frame_index,output_number,name) VALUES (?,?,?,?,?,?,?,?)",
                 [
                     (
                         segment.clip_id,
@@ -134,6 +148,7 @@ class ProjectStore:
                         int(segment.selected_for_export),
                         segment.cover_frame_index,
                         segment.output_number,
+                        segment.name,
                     )
                     for segment in snapshot.segments
                 ],
@@ -179,6 +194,7 @@ class ProjectStore:
                 selected_for_export=bool(row["selected_for_export"]),
                 cover_frame_index=row["cover_frame_index"],
                 output_number=row["output_number"],
+                name=row["name"],
             )
             for row in self.connection.execute(
                 "SELECT * FROM segments ORDER BY start_index"
@@ -196,6 +212,7 @@ class ProjectStore:
             segments=segments,
             detector_status=str(values.get("detector_status", "not_connected")),
             detector_version=values.get("detector_version"),
+            color_override=values.get("color_override"),
             saved_revision=int(values.get("saved_revision", 0)),
         )
 

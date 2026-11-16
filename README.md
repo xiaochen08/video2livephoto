@@ -18,7 +18,7 @@
 
 ## 一、安装版（推荐）
 
-安装包：`dist\视频转实况图-Setup.exe`（28 MB，**不需要装 Python**）
+安装包：`delivery\v1.0\installer\` 下由 Electron Builder 生成的 Windows 安装包（**不需要装 Python**）
 
 1. 双击 `视频转实况图-Setup.exe`
 2. 选安装位置（默认 `%LOCALAPPDATA%\Programs\LivePhoto`，**不需要管理员权限**）
@@ -26,11 +26,11 @@
 4. 点「开始安装」
 
 装完直接打开的就是**图形界面**。以后从桌面快捷方式、开始菜单，或
-`%LOCALAPPDATA%\Programs\LivePhoto\LivePhoto.exe` 打开，都是这个界面。
+开始菜单或桌面快捷方式打开，进入正式 Electron 桌面界面。
 
 **卸载**：设置 → 应用 → 找到「视频转实况图」→ 卸载，
-或直接运行 `LivePhoto.exe --uninstall`。
-快捷方式、注册表项、程序目录都会清干净（已经转好的 JPG/MOV 不受影响）。
+也可以从 Windows 设置 → 应用中卸载。
+快捷方式、注册表项、程序目录都会清干净（已经转好的 LIVP 不受影响）。
 
 ---
 
@@ -40,8 +40,8 @@
 
 | 文件 | 用途 |
 |---|---|
-| `视频转实况图.bat` | 把视频拖到它图标上，松手即转 |
-| `实况图转换-GUI.pyw` | 双击打开图形界面 |
+| `视频转实况图.bat` | 旧版调试入口，不用于正式单文件导出 |
+| `实况图转换-GUI.pyw` | 旧版调试界面；正式使用请打开 Electron 桌面版 |
 | `livephoto.py` | 核心 / 命令行 |
 | `update.py` | 版本检查（`livephoto.py check-update` 会用它）|
 
@@ -53,27 +53,29 @@ python livephoto.py 旅行.mp4 --uuid 1A2B...       :: 指定配对 ID
 python livephoto.py info a.mp4 b.mov              :: 只看视频信息
 ```
 
+说明：上面的旧版命令行工具仍用于资源对调试；桌面 UI 的正式导出结果统一为单个 `.livp` 文件。
+
 ---
 
 ## 三、转出来的东西
 
-一对**同名文件**：
+默认交付一个**单文件 `.livp`**：
 
 ```
-旅行.JPG   ← 封面，已写入 Apple MakerNote 0x0011
-旅行.MOV   ← 视频，已写入 com.apple.quicktime.content.identifier
+旅行.livp  ← 内部封装配对的照片与 MOV 资源
 ```
 
 命令行会打印 **「无损校验: 通过」**，说明视频数据一个字节都没变。
 
 ### 传到 iPhone
 
-**两个文件必须同名、一起传**，否则照片 App 认不出来：
+LIVP 是 Live Photo 配对资源的单文件交付包，不是普通视频。聊天窗口应按“文件”发送，不能按图片或视频发送：
 
-* 隔空投送：同时选中两个文件一起发送
-* iCloud 云盘 / 文件 App：放同一个文件夹一起导入
-* ⚠️ 微信、QQ 会剥掉元数据，传过去就散了
-* ⚠️ 分开传会变成「一张照片 + 一段视频」
+* **推荐**：保留 `.livp` 原文件，通过已验证的 iOS 导入流程写入 Photos。
+* **只保留原文件**：iCloud Drive、USB 或聊天窗口按“文件”发送可以用来搬运，但不代表已经完成 Photos 导入。
+* **不要**：按图片/视频发送，或发送 `视频片段\*.mp4`。微信、QQ 等聊天服务可能压缩、转码或剥离封装；即使文件没有被改写，也不等于已经完成 Photos 导入。
+
+本程序的本地校验只证明 LIVP 内部配对资源、QuickTime 容器、`still-image-time` 和可解码性通过；没有连接真实 iPhone 或 Apple Photos 前，不能把“本地通过”写成“手机实机通过”。
 
 ---
 
@@ -153,26 +155,27 @@ python livephoto.py check-update --url https://别的地址/version.json
 
 ## 七、从源码重新构建
 
-```bat
-pip install pyinstaller pillow
-python make_icon.py        :: 生成图标（可选，仓库里已有）
-python build_all.py        :: 冻结程序 -> 打包负载 -> 生成 Setup.exe
+```powershell
+npm install
+npm run package:win       # 构建正式 Electron 桌面安装包
+python build_all.py       # 兼容入口，同样转发到上面的正式构建
 ```
 
-产物在 `dist\`：`LivePhoto\`（免安装程序）+ `视频转实况图-Setup.exe`（安装包）。
-中间文件全部收在 `build\` 里。
+正式安装包由 Electron 桌面链路生成，导出结果统一为单个 `.livp` 文件。
+旧版 PyInstaller/Tk 构建入口已停用，避免生成无法直接导入的 JPG/MOV 配对文件。
 
 ### 目录结构
 
 ```
-livephoto.py             核心（CLI + 全部逻辑，纯标准库）
+livephoto.py             旧版资源调试 CLI（不代表正式桌面导出）
 update.py                在线更新 / 版本检查
 实况图转换-GUI.pyw        免安装版 GUI
 视频转实况图.bat          免安装版拖放启动器（GBK 编码）
-app/                     冻结用源码：gui.py / app_main.py / uninstall.py
-installer/setup_main.py  安装程序
-assets/app.ico           图标
-build_all.py             一键构建
+app/                     旧版兼容源码
+installer/setup_main.py  旧版安装器源码（不再由 build_all.py 调用）
+electron/                正式桌面主进程
+desktop/                 正式 Python IPC 与导出链路
+build_all.py             正式 Electron 构建兼容入口
 ```
 
 ---

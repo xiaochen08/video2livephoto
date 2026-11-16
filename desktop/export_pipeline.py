@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
-import json
+import time
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
 from core.commit.transaction import CommitArtifact, CommitTransaction
@@ -75,10 +77,23 @@ def export_queue_job(
     )
     stage = transaction.work_dir / "staged"
     stage.mkdir(parents=True, exist_ok=True)
-    segment_path = stage / "video" / f"{segment['clip_id']}.mp4"
+    file_stem = str(segment.get("file_stem") or segment["clip_id"])
+    segment_path = stage / "video" / f"{file_stem}.mp4"
     livephoto_dir = stage / "livephoto"
-    report(0.05, "encoding")
+    report(0.05, "encoding-starting")
     token = _linked_token(cancel)
+    last_progress = 0.0
+    last_progress_at = 0.0
+
+    def report_encoding_progress(ratio: float) -> None:
+        nonlocal last_progress, last_progress_at
+        now = time.monotonic()
+        if ratio < 1.0 and now - last_progress_at < 0.25 and ratio - last_progress < 0.01:
+            return
+        last_progress = max(last_progress, min(1.0, ratio))
+        last_progress_at = now
+        report(0.05 + 0.60 * last_progress, "encoding")
+
     encoded = encode_segment(
         source,
         frames,
@@ -91,24 +106,58 @@ def export_queue_job(
         prefer_gpu=True,
         token=token,
         video_stream_index=int(frames[0].stream_index) if frames else None,
+        source_color_override=(
+            str(snapshot.get("source_color_override"))
+            if snapshot.get("source_color_override")
+            else None
+        ),
+        progress_callback=report_encoding_progress,
     )
     report(0.65, "packaging")
+    cover_index = segment.get("cover_frame_index")
+    relative_cover_index: int | None = None
+    still_image_time_seconds = 0.0
+    livephoto_duration_seconds = 3.0
+    if cover_index is not None:
+        cover_index = int(cover_index)
+        frame_by_index = {frame.display_index: frame for frame in frames}
+        if start <= cover_index < end and start in frame_by_index and cover_index in frame_by_index:
+            relative_cover_index = cover_index - start
+            first_frame = frame_by_index[start]
+            cover_frame = frame_by_index[cover_index]
+            first_pts = first_frame.best_effort_pts if first_frame.best_effort_pts is not None else first_frame.pts
+            cover_pts = cover_frame.best_effort_pts if cover_frame.best_effort_pts is not None else cover_frame.pts
+            if first_pts is not None and cover_pts is not None:
+                time_base = Fraction(first_frame.time_base.num, first_frame.time_base.den)
+                still_image_time_seconds = max(0.0, float((cover_pts - first_pts) * time_base))
+                frame_duration = float(
+                    Fraction(cover_frame.duration or 1, 1)
+                    * Fraction(cover_frame.time_base.num, cover_frame.time_base.den)
+                )
+                # Keep the selected frame inside the MOV even when a segment is
+                # longer than the usual three-second Live Photo window.
+                livephoto_duration_seconds = max(
+                    livephoto_duration_seconds,
+                    still_image_time_seconds + max(frame_duration, 1 / 30),
+                )
     packed = pack_live_photo(
         encoded.output_path,
         output_dir=livephoto_dir,
         clip_id=str(segment["clip_id"]),
-        still_image_time_seconds=0.0,
+        base_name=file_stem,
+        cover_frame_index=relative_cover_index,
+        still_image_time_seconds=still_image_time_seconds,
         toolchain=toolchain,
         token=token,
+        livephoto_duration_seconds=livephoto_duration_seconds,
     )
     manifest = packed.manifest
     if manifest is None:
         raise RuntimeError("Live Photo manifest is missing")
     staged_manifest_model = manifest
     output_root = Path(job.output_dir or snapshot["output_dir"]).resolve()
-    final_jpg = output_root / "LivePhoto" / Path(manifest.jpg_path).name
-    final_mov = output_root / "LivePhoto" / Path(manifest.mov_path).name
-    manifest = replace(manifest, jpg_path=str(final_jpg), mov_path=str(final_mov))
+    final_livp = output_root / "LivePhoto" / Path(manifest.livp_path).name
+    manifest = replace(manifest, livp_path=str(final_livp))
     Path(packed.manifest_path).write_text(
         json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -117,8 +166,7 @@ def export_queue_job(
     report(0.85, "validating")
     relative = [
         (segment_path, Path("视频片段") / segment_path.name),
-        (Path(staged_manifest_model.jpg_path), Path("LivePhoto") / Path(staged_manifest_model.jpg_path).name),
-        (Path(staged_manifest_model.mov_path), Path("LivePhoto") / Path(staged_manifest_model.mov_path).name),
+        (Path(staged_manifest_model.livp_path), Path("LivePhoto") / Path(staged_manifest_model.livp_path).name),
         (
             Path(packed.manifest_path),
             Path("LivePhoto") / Path(packed.manifest_path).name,

@@ -189,6 +189,43 @@ def test_async_preview_cannot_reopen_a_project_after_switch() -> None:
     server._preview_executor.shutdown(wait=True, cancel_futures=True)
 
 
+def test_preview_is_suspended_while_an_export_worker_is_running() -> None:
+    called = False
+
+    class CurrentService:
+        snapshot = type("Snapshot", (), {"project_id": "project"})()
+
+        def preview_frame(self, _index, *, width, token):
+            nonlocal called
+            called = True
+            raise AssertionError("preview must not compete with an active export")
+
+    class ActiveRunner:
+        running_job_ids = ("job-1",)
+
+    server = JsonlIpcServer()
+    server.service = CurrentService()
+    server.runner = ActiveRunner()
+    request = {
+        "id": "preview-during-export",
+        "protocol": "m3.ipc.v1",
+        "method": "preview.getFrame",
+        "params": {
+            "preview_request_id": "preview-during-export",
+            "project_id": "project",
+            "frame": 642,
+            "size": "thumb",
+        },
+    }
+
+    with pytest.raises(M3ProjectError) as exc:
+        server.handle(request, _preview_token=CancellationToken())
+
+    assert exc.value.code == "PREVIEW_BUSY"
+    assert called is False
+    server._preview_executor.shutdown(wait=True, cancel_futures=True)
+
+
 def test_ipc_protocol_ping_and_real_import(
     small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path, monkeypatch
 ) -> None:
@@ -210,6 +247,27 @@ def test_ipc_protocol_ping_and_real_import(
     assert result["ok"] is True
     assert result["project"]["frame_count"] >= 20
     server.handle({"protocol": "m3.ipc.v1", "method": "state"})
+    server._close_project()
+
+
+def test_ipc_media_probe_handles_unknown_color_without_project_snapshot(
+    small_mp4: Path,
+    ffmpeg_path: str,
+    ffprobe_path: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    monkeypatch.setattr("desktop.service.Toolchain.discover", lambda: toolchain)
+    server = JsonlIpcServer()
+    result = server.handle(
+        {
+            "protocol": "m3.ipc.v1",
+            "method": "media.probe",
+            "params": {"file": {"display_path": str(small_mp4)}},
+        }
+    )
+    assert result["ok"] is True
+    assert result["probe"]["media"]["video_streams"]
     server._close_project()
 
 
@@ -256,7 +314,9 @@ def test_ipc_start_export_runs_queue_and_publishes_outputs(
     else:
         raise AssertionError(status)
     assert list((tmp_path / "out" / "视频片段").glob("*.mp4"))
-    assert list((tmp_path / "out" / "LivePhoto").glob("*.JPG"))
+    assert list((tmp_path / "out" / "LivePhoto").glob("*.livp"))
+    assert not list((tmp_path / "out" / "LivePhoto").glob("*.JPG"))
+    assert not list((tmp_path / "out" / "LivePhoto").glob("*.MOV"))
     assert status["report_path"] == str(tmp_path / "out" / "导出报告.json")
     assert (tmp_path / "out" / "导出报告.json").is_file()
     assert json.loads((tmp_path / "out" / "导出报告.json").read_text(encoding="utf-8"))["status"] == "complete"
@@ -264,8 +324,9 @@ def test_ipc_start_export_runs_queue_and_publishes_outputs(
     assert manifests
     for manifest_path in manifests:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        assert Path(manifest["jpg_path"]).is_file()
-        assert Path(manifest["mov_path"]).is_file()
+        assert manifest["jpg_path"] is None
+        assert manifest["mov_path"] is None
+        assert Path(manifest["livp_path"]).is_file()
     server._close_project()
 
 

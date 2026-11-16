@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import zipfile
 from pathlib import Path
 
 from core.livephoto.pack import pack_live_photo
@@ -44,15 +45,41 @@ def test_livephoto_pair_has_matching_uuid_hashes_and_local_validation(
     assert result.manifest is not None
     manifest = result.manifest
     assert manifest.pairing_uuid == "12345678-1234-5678-1234-567812345678"
-    assert Path(manifest.jpg_path).exists()
-    assert Path(manifest.mov_path).exists()
+    assert manifest.jpg_path is None
+    assert manifest.mov_path is None
+    assert Path(manifest.livp_path).exists()
     assert Path(result.manifest_path).exists()
+    with zipfile.ZipFile(manifest.livp_path) as archive:
+        assert archive.testzip() is None
+        assert len(archive.comment) == 28
+        assert archive.comment[-8:] == b"1000LIVP"
+        assert archive.namelist() == [
+            "IMB_12345678.JPG",
+            "IMB_12345678.MOV",
+        ]
+        assert all(
+            item.compress_type == zipfile.ZIP_STORED
+            for item in archive.infolist()
+        )
+        extracted_mov = tmp_path / "extracted.MOV"
+        with archive.open("IMB_12345678.MOV") as source, extracted_mov.open("wb") as target:
+            target.write(source.read())
+    assert manifest.validation["livp"]["valid"] is True
+    assert manifest.validation["livp"]["entry_count"] == 2
     assert manifest.validation["jpg_makernote_uuid"] == manifest.pairing_uuid
     assert manifest.validation["mov_contains_pairing_uuid"] is True
     assert manifest.validation["timed_metadata_track"] is True
     assert manifest.validation["timed_metadata_codec"] == "mebx"
     assert manifest.validation["timed_metadata_sample_marker"] == -1
     assert manifest.validation["timed_metadata_edit_list"] == [(0, -1), (1, 0)]
+    assert manifest.validation["iphone_photos_import"] == "unverified"
+    assert manifest.validation["motion_sensor_track"] is False
+    assert manifest.validation["video_codec"] == "h264"
+    assert manifest.validation["livephoto_duration_cap_seconds"] == 3.0
+    assert manifest.validation["compatibility_warnings"] == [
+        "non_hevc_video",
+        "motion_sensor_track_missing",
+    ]
     probe = subprocess.run(
         [
             ffprobe_path,
@@ -62,7 +89,7 @@ def test_livephoto_pair_has_matching_uuid_hashes_and_local_validation(
             "json",
             "-show_entries",
             "stream=index,codec_type,codec_tag_string:stream_tags=handler_name",
-            manifest.mov_path,
+            str(extracted_mov),
         ],
         check=False,
         capture_output=True,
@@ -77,9 +104,39 @@ def test_livephoto_pair_has_matching_uuid_hashes_and_local_validation(
         and stream.get("codec_tag_string") == "mebx"
         for stream in streams
     )
+    assert not any(stream.get("codec_tag_string") == "tmcd" for stream in streams)
+    assert any(stream.get("codec_type") == "video" for stream in streams)
+    assert any(stream.get("codec_type") == "audio" for stream in streams)
+    metadata_probe = subprocess.run(
+        [
+            ffprobe_path,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_entries",
+            "format_tags",
+            str(extracted_mov),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert metadata_probe.returncode == 0, metadata_probe.stderr
+    tags = json.loads(metadata_probe.stdout)["format"].get("tags") or {}
+    assert tags["major_brand"] == "qt  "
+    assert tags["com.apple.quicktime.content.identifier"] == manifest.pairing_uuid
+    assert tags["com.apple.quicktime.live-photo.auto"] == "1"
+    assert tags["com.apple.quicktime.live-photo.vitality-score"] == "1.0"
+    assert tags["com.apple.quicktime.live-photo.vitality-scoring-version"] == "4"
+    assert tags["com.apple.quicktime.full-frame-rate-playback-intent"] == "1"
     loaded = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
     assert loaded["jpg_sha256"] == manifest.jpg_sha256
     assert loaded["mov_sha256"] == manifest.mov_sha256
+    assert loaded["livp_sha256"] == manifest.livp_sha256
+    assert loaded["livp_bytes"] == manifest.livp_bytes
 
 
 def test_livephoto_rejects_still_time_outside_video(

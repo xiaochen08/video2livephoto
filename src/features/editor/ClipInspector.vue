@@ -75,11 +75,10 @@ const ms = (us: number) => Math.round(us / 1000)
       <div class="ci__row">
         <UiSwitch :model-value="clip.export_selected" label="参与导出" @update:model-value="(v) => actions.setExport([clip.clip_id], v)" />
       </div>
-      <p class="small muted">{{ clip.export_selected ? '生成完整 MP4，以及同名配对的 JPG + MOV 实况。' : '不参与本次导出。时间线画面保持完整，不会被删除。' }}</p>
+      <p class="small muted">{{ clip.export_selected ? '生成完整 MP4，以及一个封装好的 LIVP 实况文件。' : '不参与本次导出。时间线画面保持完整，不会被删除。' }}</p>
       <ul v-if="clip.export_selected" class="ci__files small mono">
         <li><span class="muted">视频片段/</span>{{ stem }}.mp4</li>
-        <li><span class="muted">LivePhoto/</span>{{ stem }}.jpg</li>
-        <li><span class="muted">LivePhoto/</span>{{ stem }}.mov</li>
+        <li><span class="muted">LivePhoto/</span>{{ stem }}.livp</li>
       </ul>
       <div v-if="lastJob" class="ci__row small">
         <span class="muted">最近导出</span>
@@ -95,7 +94,7 @@ const ms = (us: number) => Math.round(us / 1000)
     <InspectorSection title="音频">
       <template v-if="session.hasAudio.value">
         <UiSwitch :model-value="clip.audio === 'source'" label="导出原声" @update:model-value="(v) => actions.setAudio([clip.clip_id], v ? 'source' : 'muted')" />
-        <p class="small muted">{{ clip.audio === 'source' ? '保留源视频对应时段的混合音频。' : '导出的 MP4 与 MOV 不含声音。' }} 播放器中的预览音量只影响试听。</p>
+        <p class="small muted">{{ clip.audio === 'source' ? '保留源视频对应时段的混合音频。' : '导出的 MP4 与 LIVP 内部视频不含声音。' }} 播放器中的预览音量只影响试听。</p>
       </template>
       <template v-else>
         <UiSwitch :model-value="false" label="导出原声" disabled />
@@ -118,7 +117,7 @@ const ms = (us: number) => Math.round(us / 1000)
         超短实况（{{ formatDuration(dur) }}，低于 {{ (caps?.livephoto_hint.short_below_ms ?? 0) / 1000 }} 秒）：部分平台可能不识别为实况。原帧范围保持不变，不会补帧或延长，你可以继续导出。
       </UiBanner>
       <UiBanner v-if="hints.includes('long')" tone="warning" compact>
-        超长实况（{{ formatDuration(dur) }}）：部分平台可能截断或只播放开头。完整时长会被保留，不会自动缩短。
+        超长片段（{{ formatDuration(dur) }}）：导出时完整 MP4 会保留当前范围，LivePhoto/ 会自动取前约 3 秒；如果要用中间时间段，请先在时间线上裁剪。部分平台仍可能有额外限制。
       </UiBanner>
       <p v-if="ms(dur) < 1000 && !hints.includes('short')" class="small muted">短镜头保持原帧范围。</p>
     </InspectorSection>

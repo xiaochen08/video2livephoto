@@ -95,7 +95,7 @@
 - 文件：core/livephoto/pack.py:298, 327；docs/M4_M5_MEDIA_EXPORT.md
 - 规则：M5 必须生成并校验必要元数据；iPhone 兼容性另行标记。
 - 证据：实现明确固定 timed_metadata_track=false，只写 moov metadata 与 JPEG MakerNote。文档诚实保留 iPhone 未验证状态，但这意味着 M5 完整验收尚未达到。
-- 影响：不能把输出 JPG/MOV 视为完整 Live Photo，也不能申请 V1.0 外部终审通过。
+- 影响：不能把本地生成的 LIVP 视为已通过 iPhone 真机验收，也不能申请 V1.0 外部终审通过。
 - 修复建议：接入可复核的 Apple timed metadata 轨生成/外部解析；在此之前维持 BLOCKED，不得改写为 PASS。
 
 ### R-P1-008：重复 start_export 没有去重或快照锁
@@ -116,7 +116,7 @@
 | M2 短镜头保留、黑场、叠化候选 | PASS（合成）/BLOCKED（实拍） | 算法测试通过，真实复杂素材未验证 |
 | M3 真实导入、时间线、编辑、音频冲突 | PASS（Python/IPC）/BLOCKED（视觉） | build/selftest/IPC 通过；固定审查工作树无真实安装窗口截图，renderer 没有切点 checked 操作按钮，也没有队列恢复 UI |
 | M4 精准帧范围、GPU→CPU、HDR→SDR | PASS（合成）/BLOCKED（复杂实拍） | 测试覆盖 VFR/GPU fallback/HDR10；无婚礼 4K/长短混合真实回归 |
-| M5 JPG/MOV UUID、哈希、本地解码 | PASS（本地） | 真实 iPhone/Apple timed metadata track 未验证，仍 BLOCKED |
+| M5 LIVP UUID、哈希、本地解码 | PASS（本地） | 真实 iPhone/Apple timed metadata track 未验证，仍 BLOCKED |
 | M6 队列、恢复、事务 | FAIL/BLOCKED | 发现 R-P0-001、R-P1-002、R-P1-003、R-P1-008；不可交付 |
 | M7 离线候选目录/ZIP | BLOCKED（固定提交证据） | sibling worktree 有 ZIP，但 runtime/delivery 不在固定提交，需在修复后重新生成并绑定 SHA |
 | NSIS 安装器/安装卸载 | BLOCKED | 文档记录 NSIS resources 网络阻塞；未完成实机安装矩阵 |

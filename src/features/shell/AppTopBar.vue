@@ -37,7 +37,7 @@ const steps = computed(() => {
     { id: 'import', n: 1, label: '导入分析', done: true, active: false, badge: null as number | null, hint: '已完成镜头分析' },
     { id: 'review', n: 2, label: '检查切点', done: pendingCount.value === 0, active: review, badge: pendingCount.value || null, hint: pendingCount.value ? `${pendingCount.value} 处切点待检查` : '切点已全部检查' },
     { id: 'edit', n: 3, label: '片段与封面', done: false, active: r === 'editor' && !review, badge: null, hint: '设置片段、封面与音频' },
-    { id: 'export', n: 4, label: '导出', done: !!t && !t.active && t.failed === 0 && t.done === t.total, active: r === 'tasks', badge: null, hint: t ? `已完成 ${t.done}/${t.total}` : '确认导出 MP4 + JPG + MOV' },
+    { id: 'export', n: 4, label: '导出', done: !!t && !t.active && t.failed === 0 && t.done === t.total, active: r === 'tasks', badge: null, hint: t ? `已完成 ${t.done}/${t.total}` : '确认导出 MP4 + LIVP' },
   ]
 })
 function goStep(id: string) {

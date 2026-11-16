@@ -13,6 +13,7 @@ from typing import Any
 
 from core.analysis.shot_detection import detect_shots
 from core.media.frame_index import build_frame_index
+from core.media.color import color_override_metadata
 from core.media.process import CancellationToken, kill_process
 from core.media.probe import probe_media
 from core.media.source_identity import capture_identity, identities_match
@@ -31,6 +32,7 @@ from .store import ProjectStore
 
 
 DetectionProvider = Callable[[str, dict[str, Any], str], dict[str, Any]]
+_UNSET = object()
 
 
 class M3ProjectService:
@@ -65,10 +67,17 @@ class M3ProjectService:
         token: CancellationToken | None = None,
         timeout_seconds: float = 3600.0,
         video_stream_index: int | None = None,
+        color_override: str | None = None,
         progress_callback: Callable[[str, int, int | None], None] | None = None,
     ) -> "M3ProjectService":
         source = Path(source_path).resolve(strict=True)
         project = Path(project_path).resolve()
+        if color_override is not None and color_override_metadata(color_override) is None:
+            raise M3ProjectError(
+                "INVALID_COLOR_OVERRIDE",
+                "导入时选择的色彩类型不受支持。",
+                details={"color_override": color_override},
+            )
         if cache_root is None:
             cache_root = project.parent / f".{project.stem}.m1-cache"
         selected_toolchain = toolchain or Toolchain.discover()
@@ -170,6 +179,7 @@ class M3ProjectService:
             segments=_segments_from_cuts(index.frame_count, cuts),
             detector_status=detector_status,
             detector_version=detector_version,
+            color_override=color_override,
         )
         store = ProjectStore.create(project)
         store.save(snapshot)
@@ -268,6 +278,7 @@ class M3ProjectService:
                 "-hide_banner",
                 "-loglevel",
                 "error",
+                "-nostdin",
                 # Seek to the nearest keyframe before the target, then keep
                 # the exact PTS filter below.  This avoids decoding the whole
                 # source from frame zero while preserving frame identity.
@@ -296,6 +307,7 @@ class M3ProjectService:
                 "pipe:1",
             ],
             shell=False,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             creationflags=process_creation_flags(),
@@ -568,6 +580,7 @@ class M3ProjectService:
                 or right.selected_for_export,
                 cover_frame_index=left.cover_frame_index,
                 output_number=left.output_number,
+                name=left.name,
             )
             self.snapshot.segments = (
                 segments[:left_pos] + [merged] + segments[right_pos + 1 :]
@@ -606,7 +619,12 @@ class M3ProjectService:
         return self._change(mutate)
 
     def set_segment_properties_many(
-        self, clip_ids: Iterable[str], *, audio_enabled: bool | None = None, selected_for_export: bool | None = None
+        self,
+        clip_ids: Iterable[str],
+        *,
+        audio_enabled: bool | None = None,
+        selected_for_export: bool | None = None,
+        name: str | None | object = _UNSET,
     ) -> ProjectSnapshot:
         ids = [str(item) for item in clip_ids]
 
@@ -617,6 +635,9 @@ class M3ProjectService:
                     segment.audio_enabled = bool(audio_enabled)
                 if selected_for_export is not None:
                     segment.selected_for_export = bool(selected_for_export)
+                if name is not _UNSET:
+                    value = str(name).strip() if name is not None else ""
+                    segment.name = value or None
 
         return self._change(mutate)
 
@@ -647,6 +668,7 @@ class M3ProjectService:
                 selected_for_export=any(item.selected_for_export for item in selected),
                 cover_frame_index=selected[0].cover_frame_index,
                 output_number=selected[0].output_number,
+                name=selected[0].name,
             )
             self.snapshot.segments = segments[: positions[0]] + [merged] + segments[positions[-1] + 1 :]
             removed_boundaries = {item.end_index for item in selected[:-1]}
@@ -767,6 +789,7 @@ class M3ProjectService:
                     if old is not None
                     else None,
                     output_number=index,
+                    name=old.name if old is not None else None,
                 )
             )
         self.snapshot.segments = rebuilt

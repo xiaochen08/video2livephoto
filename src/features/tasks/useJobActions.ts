@@ -32,7 +32,7 @@ export function useJobActions() {
   }
   const retry = (batch: Batch, job: Job) => run(tasks.retryFailed(batch.batch_id, [job.job_id]), `已重新排队 ${job.file_stem}（成功文件保持不变）`)
 
-  async function open(job: Job, kind: 'mp4' | 'jpg' | 'mov') {
+  async function open(job: Job, kind: 'mp4' | 'livp' | 'jpg' | 'mov') {
     await run(adapter.files.openArtifact(job.job_id, kind))
     if (adapter.mode === 'demo') ui.toast(`演示：已请求打开 ${job.file_stem}.${kind}（未打开真实文件）`, { timeout: 3000 })
   }

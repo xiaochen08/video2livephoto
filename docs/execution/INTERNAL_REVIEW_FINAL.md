@@ -48,7 +48,7 @@ core/media/normalize.py 使用后台 communicate 持续排水，并在取消/超
 
 ### Live Photo still-image-time
 
-非法 999 秒测试返回 STILL_IMAGE_TIME_OUT_OF_RANGE；实现还要求有限非负值并对齐 MOV 显示帧时间戳。正常 JPG/MOV UUID、哈希和本地解码测试通过。timed_metadata_track 仍固定为 false，属于明确 BLOCKED，不得描述为完整 Apple Live Photo 或 iPhone 兼容通过。
+非法 999 秒测试返回 STILL_IMAGE_TIME_OUT_OF_RANGE；实现还要求有限非负值并对齐 MOV 显示帧时间戳。正常 LIVP 内部资源 UUID、哈希和本地解码测试通过。timed_metadata_track 仍固定为 false，属于明确 BLOCKED，不得描述为完整 Apple Live Photo 或 iPhone 兼容通过。
 
 ### 队列恢复、去重和并发
 

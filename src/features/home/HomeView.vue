@@ -224,7 +224,7 @@ onBeforeUnmount(() => {
       <ol class="steps small" aria-label="工作流程">
         <li><span class="steps__n num">1</span>导入并分析镜头</li>
         <li><span class="steps__n num">2</span>检查切点、设置片段与封面</li>
-        <li><span class="steps__n num">3</span>确认导出 MP4 + JPG + MOV</li>
+        <li><span class="steps__n num">3</span>确认导出 MP4 + LIVP</li>
       </ol>
     </section>
 

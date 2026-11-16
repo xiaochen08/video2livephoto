@@ -25,3 +25,4 @@ node_modules/
 m3-electron-*.log
 runtime/
 delivery/
+.bug-hunter/

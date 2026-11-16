@@ -28,7 +28,7 @@ export function colorLimitNote(c: ColorInfo, hdrSupported: boolean): string | nu
     return hdrSupported ? `源为 ${c.transfer.toUpperCase()} HDR。默认转换为 Rec.709 SDR；手动保留 HDR 仅限后端已验证的范围。` : `源为 ${c.transfer.toUpperCase()} HDR。当前后端不支持 HDR 输出，将转换为 Rec.709 SDR。`
   }
   if (c.transfer === 'log') return 'Log 素材不会自动套用 LUT，输出保持源画面的 Log 观感。'
-  if (c.transfer === 'unknown') return '源视频未标注色彩信息，按 Rec.709 处理。若画面偏色，请在剪辑软件中补充色彩标记后重新导入。'
+  if (c.transfer === 'unknown') return '源视频未标注完整色彩信息。请重新导入，并在导入阶段选择 SDR / Rec.709、HDR10 / PQ 或 HDR / HLG。'
   return null
 }
 

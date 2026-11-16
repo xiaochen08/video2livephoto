@@ -22,6 +22,7 @@ const ja = useJobActions()
 const uiState = computed(() => (props.job && props.batch ? ja.uiOf(props.job, props.batch) : null))
 const DEVICE = { iphone: 'iPhone 相册', wechat_moments: '微信朋友圈', xiaohongshu: '小红书', douyin: '抖音' } as const
 const committed = computed(() => props.job?.artifacts.every((a) => a.status === 'committed') ?? false)
+const hasSingleFileLivePhoto = computed(() => props.job?.artifacts.some((a) => a.kind === 'livp') ?? false)
 </script>
 
 <template>
@@ -69,22 +70,28 @@ const committed = computed(() => props.job?.artifacts.every((a) => a.status === 
         </div>
         <div class="row">
           <UiButton size="sm" :icon="FolderOpen" @click="ja.reveal(job)">定位目录</UiButton>
-          <UiButton size="sm" :icon="FileSearch" :disabled="!job.verification.local_report_id" disabled-reason="尚未生成校验报告" @click="ja.report(job)">本地校验报告</UiButton>
+          <UiButton size="sm" :icon="FileSearch" :disabled="!job.verification.local_report_id" disabled-reason="尚未生成校验报告" @click="ja.report(job)">配对校验报告</UiButton>
         </div>
+        <UiBanner v-if="committed && hasSingleFileLivePhoto" tone="warning" compact>
+          这两件产物通过的是本地 LIVP 封装校验，不是 iPhone 相册实机验收。请把 <span class="mono">LivePhoto/*.livp</span> 按“文件”发送到手机；按图片/视频发送可能压缩或转码。不要发送 <span class="mono">视频片段/*.mp4</span>。
+        </UiBanner>
+        <UiBanner v-else-if="committed" tone="warning" compact>
+          这是旧版 JPG/MOV 配对输出，只代表文件本地校验通过。新导出会生成单个 <span class="mono">.livp</span>；不要按图片/视频发送旧资源。
+        </UiBanner>
       </section>
 
       <section class="jd__sec">
         <h3 class="section-title">校验</h3>
         <dl class="jd__dl">
-          <ParamRow label="本地文件校验">
+          <ParamRow label="基础配对校验">
             <StatusTag size="sm" :tone="job.verification.local === 'passed' ? 'success' : job.verification.local === 'failed' ? 'danger' : 'muted'" :label="job.verification.local === 'passed' ? '通过' : job.verification.local === 'failed' ? '未通过' : '未完成'" />
           </ParamRow>
           <ParamRow v-for="(label, key) in DEVICE" :key="key" :label="label">
             <StatusTag size="sm" :tone="job.verification.devices[key] === 'passed' ? 'success' : job.verification.devices[key] === 'failed' ? 'danger' : 'muted'" :label="job.verification.devices[key] === 'unverified' ? '待验证' : job.verification.devices[key] === 'passed' ? '实机通过' : '实机失败'" />
           </ParamRow>
         </dl>
-        <p class="small muted">本地校验检查文件可解码、帧范围与快照一致、JPG 与 MOV 配对标识一致。平台实机播放需在真实设备上测试后单独记录。</p>
-        <p v-if="committed" class="small muted">三件产物均已提交。</p>
+        <p class="small muted">基础校验检查文件可解码、帧范围与快照一致、LIVP 内部资源及配对标识一致；它不等于 iPhone 相册已创建 Live Photo。平台实机播放需在真实设备上测试后单独记录。</p>
+        <p v-if="committed" class="small muted">两件产物均已提交。</p>
       </section>
 
       <section class="jd__sec">

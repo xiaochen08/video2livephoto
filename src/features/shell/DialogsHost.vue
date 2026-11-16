@@ -12,6 +12,7 @@ import ExportDialog from '@/features/export/ExportDialog.vue'
 import MultiFileDialog from '@/features/home/MultiFileDialog.vue'
 import RelocateDialog from '@/features/home/RelocateDialog.vue'
 import StreamSelectDialog from '@/features/home/StreamSelectDialog.vue'
+import ColorSelectDialog from '@/features/home/ColorSelectDialog.vue'
 import RecoveryDialog from '@/features/recovery/RecoveryDialog.vue'
 
 const { ui, session, tasks, adapter } = useApp()
@@ -45,6 +46,7 @@ watch(d.closeApp, () => (quitNote.value = null))
 <template>
   <AnalysisDialog />
   <StreamSelectDialog />
+  <ColorSelectDialog />
   <MultiFileDialog />
   <RelocateDialog />
   <ExportDialog />

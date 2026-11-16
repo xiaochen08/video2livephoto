@@ -123,6 +123,12 @@ class QueueRunner:
                 error_message=str(exc),
                 user_confirmation_required=False,
             )
+            self.store.update_attempt(
+                job.job_id,
+                result="cancelled",
+                error={"code": "CANCELLED", "message": str(exc)},
+                ended_at=self.store.get(job.job_id).updated_at,
+            )
             return None
         except Exception as exc:  # worker errors are persisted, not lost in a thread
             job_logger.error(
@@ -140,6 +146,15 @@ class QueueRunner:
                 phase="failed",
                 error_code=getattr(exc, "code", "WORKER_FAILED"),
                 error_message=str(exc),
+            )
+            self.store.update_attempt(
+                job.job_id,
+                result="failed",
+                error={
+                    "code": getattr(exc, "code", "WORKER_FAILED"),
+                    "message": str(exc),
+                },
+                ended_at=self.store.get(job.job_id).updated_at,
             )
             return None
 
@@ -201,12 +216,19 @@ class QueueRunner:
             return
         succeeded = False
         try:
-            self.store.transition(
+            completed = self.store.transition(
                 job.job_id,
                 QueueState.SUCCEEDED,
                 progress=1.0,
                 phase="succeeded",
                 result=result or {},
+            )
+            encoder = str((result or {}).get("encoder") or "") or None
+            self.store.update_attempt(
+                job.job_id,
+                encoder=encoder,
+                result="succeeded",
+                ended_at=completed.updated_at,
             )
             succeeded = True
         except Exception:
@@ -218,11 +240,17 @@ class QueueRunner:
                 extra={"event": "queue.state_commit.failed", "fields": {"job_id": job.job_id}},
             )
             try:
-                self.store.transition(
+                failed = self.store.transition(
                     job.job_id,
                     QueueState.FAILED,
                     error_code="STATE_COMMIT_FAILED",
                     error_message="无法提交任务状态",
+                )
+                self.store.update_attempt(
+                    job.job_id,
+                    result="failed",
+                    error={"code": "STATE_COMMIT_FAILED", "message": "无法提交任务状态"},
+                    ended_at=failed.updated_at,
                 )
             except Exception:
                 self.logger.error(

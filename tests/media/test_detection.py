@@ -106,7 +106,7 @@ def test_detection_result_is_versioned_and_json_serializable(
     result = _detect(hard_cut_mp4, ffmpeg_path, ffprobe_path, tmp_path)
     payload = json.loads(detection_to_json(result))
     assert payload["schema_version"] == "m2.detection.v1"
-    assert payload["config"]["version"] == "m2.config.v1"
+    assert payload["config"]["version"] == "m2.config.v2"
     assert payload["segments"]
 
 
@@ -128,6 +128,15 @@ def test_detection_reports_frame_progress(
     assert result.status == "complete"
     assert progress
     assert progress[-1] == (result.analyzed_frame_count, result.analyzed_frame_count)
+
+
+def test_detection_clusters_nearby_candidates_in_real_demo_asset(
+    ffmpeg_path: str, ffprobe_path: str, tmp_path: Path
+) -> None:
+    source = Path(__file__).parents[2] / "src" / "assets" / "media" / "demo-landscape.mp4"
+    result = _detect(source, ffmpeg_path, ffprobe_path, tmp_path)
+    boundaries = [item.frame_index for item in result.candidates]
+    assert all(right - left > 5 for left, right in zip(boundaries, boundaries[1:]))
 
 
 def test_detection_rejects_audio_only_media(

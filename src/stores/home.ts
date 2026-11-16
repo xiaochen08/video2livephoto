@@ -2,7 +2,7 @@ import { reactive, shallowRef } from 'vue'
 import type { AnalysisEvent, AnalysisHandle, FileRef, ProbeResult, V2LPAdapter } from '@/adapters/contract'
 import { isAbort, toAppError } from '@/domain/errors'
 import { requestId } from '@/domain/ids'
-import type { AppError, ProjectId, RecentProject } from '@/domain/types'
+import type { AppError, ImportColorSelection, ProjectId, RecentProject } from '@/domain/types'
 
 export type AnalysisStatus = 'probing' | 'running' | 'failed' | 'cancelling' | 'cancelled' | 'done'
 
@@ -10,6 +10,7 @@ export interface AnalysisSession {
   file: FileRef
   projectName: string
   streamIndex: number
+  colorOverride: ImportColorSelection | null
   status: AnalysisStatus
   event: AnalysisEvent | null
   probe: ProbeResult | null
@@ -70,7 +71,7 @@ export function createHome(adapter: V2LPAdapter) {
   }
 
   /** Starts analysis. Guarded so repeated clicks never start a second identical job. */
-  function startAnalysis(probeRes: ProbeResult, streamIndex: number): boolean {
+  function startAnalysis(probeRes: ProbeResult, streamIndex: number, colorOverride: ImportColorSelection | null = null): boolean {
     if (analysis.value && ['probing', 'running', 'cancelling'].includes(analysis.value.status)) return false
     const name = probeRes.file.name.replace(/\.[^.]+$/, '')
     const rid = requestId('analysis')
@@ -78,6 +79,7 @@ export function createHome(adapter: V2LPAdapter) {
       file: probeRes.file,
       projectName: name,
       streamIndex,
+      colorOverride,
       status: 'running',
       event: null,
       probe: probeRes,
@@ -93,7 +95,7 @@ export function createHome(adapter: V2LPAdapter) {
 
   function run(rid: string) {
     const a = analysis.value!
-    const h = adapter.analysis.start({ file: a.file, video_stream_index: a.streamIndex, project_name: a.projectName, request_id: rid }, (e) => {
+    const h = adapter.analysis.start({ file: a.file, video_stream_index: a.streamIndex, project_name: a.projectName, request_id: rid, color_override: a.colorOverride }, (e) => {
       if (analysis.value?.requestId !== rid) return
       const prev = analysis.value.event
       if (prev && e.seq <= prev.seq) return

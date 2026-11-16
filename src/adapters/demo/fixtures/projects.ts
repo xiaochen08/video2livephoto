@@ -178,7 +178,7 @@ function finishedJob(job: Job, at: number, encoder: 'gpu' | 'cpu' = 'gpu'): Job 
     ...job,
     stage: 'succeeded',
     attempts: [{ attempt_id: nextId('att'), n: 1, encoder, started_at: ago(at + 2), ended_at: ago(at), result: 'succeeded', error: null }],
-    artifacts: job.artifacts.map((a) => ({ ...a, status: 'committed', size_bytes: a.kind === 'jpg' ? '842113' : '18337520' })),
+    artifacts: job.artifacts.map((a) => ({ ...a, status: 'committed', size_bytes: a.kind === 'livp' ? '18337520' : '842113' })),
     verification: { ...job.verification, local: 'passed', local_report_id: `rep_${job.job_id}` },
     cancellable: false,
     previous_protected: false,
@@ -195,7 +195,7 @@ export const ERR = {
       retryable: true,
     }),
   fileLocked: (stem: string) =>
-    makeError('FILE_LOCKED', `目标文件 ${stem}.mov 正被其他程序占用，无法替换。`, {
+    makeError('FILE_LOCKED', `目标文件 ${stem}.livp 正被其他程序占用，无法替换。`, {
       scope: { stage: 'committing' },
       preserved: '新版已生成并通过校验，旧版文件未被修改，可在解除占用后直接重试提交。',
       actions: ['close_other_program', 'retry_job', 'open_output_dir', 'copy_error'],
@@ -229,7 +229,7 @@ function partialBatch(p: Project): DemoBatchFixture {
         stage: 'failed',
         attempts: [{ attempt_id: nextId('att'), n: 1, encoder: 'gpu', started_at: ago(40), ended_at: ago(39), result: 'failed', error: ERR.fileLocked(j.file_stem) }],
         error: { ...ERR.fileLocked(j.file_stem), scope: { stage: 'committing', job_id: j.job_id, clip_id: j.clip_id } },
-        artifacts: j.artifacts.map((a) => ({ ...a, status: a.kind === 'mov' ? 'failed' : 'verified' })),
+        artifacts: j.artifacts.map((a) => ({ ...a, status: a.kind === 'livp' ? 'failed' : 'verified' })),
         verification: { ...j.verification, local: 'passed', local_report_id: `rep_${j.job_id}` },
       } satisfies Partial<Job>)
     } else if (i === 9) {
@@ -269,13 +269,13 @@ function recoveryBatch(p: Project): DemoBatchFixture {
       Object.assign(j, {
         stage: 'commit_unknown',
         attempts: [{ attempt_id: nextId('att'), n: 1, encoder: 'gpu', started_at: ago(15), ended_at: null, result: 'interrupted', error: null }],
-        artifacts: j.artifacts.map((a) => ({ ...a, status: a.kind === 'mov' ? 'writing' : 'committed' })),
+        artifacts: j.artifacts.map((a) => ({ ...a, status: a.kind === 'livp' ? 'writing' : 'committed' })),
       } satisfies Partial<Job>)
     } else if (i === 5) {
       Object.assign(j, {
         stage: 'interrupted',
         attempts: [{ attempt_id: nextId('att'), n: 1, encoder: 'gpu', started_at: ago(15), ended_at: null, result: 'interrupted', error: null }],
-        artifacts: j.artifacts.map((a) => ({ ...a, status: a.kind === 'jpg' ? 'verified' : 'pending' })),
+        artifacts: j.artifacts.map((a) => ({ ...a, status: a.kind === 'livp' ? 'verified' : 'pending' })),
       } satisfies Partial<Job>)
     } else Object.assign(j, { stage: 'interrupted' } satisfies Partial<Job>)
     j.current_attempt_id = j.attempts[j.attempts.length - 1]?.attempt_id ?? null

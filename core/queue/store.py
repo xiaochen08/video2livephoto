@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class QueueState(StrEnum):
@@ -69,6 +69,7 @@ class QueueJob:
     progress: float
     phase: str | None
     attempt_count: int
+    attempts: list[dict[str, Any]]
     retry_limit: int
     temp_dir: str | None
     output_dir: str | None
@@ -160,6 +161,7 @@ class QueueStore:
                     progress REAL NOT NULL DEFAULT 0,
                     phase TEXT,
                     attempt_count INTEGER NOT NULL DEFAULT 0,
+                    attempts_json TEXT NOT NULL DEFAULT '[]',
                     retry_limit INTEGER NOT NULL DEFAULT 2,
                     temp_dir TEXT,
                     output_dir TEXT,
@@ -177,8 +179,17 @@ class QueueStore:
                 CREATE INDEX IF NOT EXISTS idx_queue_jobs_clip ON queue_jobs(clip_id);
                 """
             )
+            columns = {
+                str(row[1])
+                for row in db.execute("PRAGMA table_info(queue_jobs)").fetchall()
+            }
+            if "attempts_json" not in columns:
+                db.execute(
+                    "ALTER TABLE queue_jobs ADD COLUMN attempts_json TEXT NOT NULL DEFAULT '[]'"
+                )
             db.execute(
-                "INSERT OR IGNORE INTO queue_meta(key, value) VALUES('schema_version', ?)",
+                "INSERT INTO queue_meta(key, value) VALUES('schema_version', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (str(SCHEMA_VERSION),),
             )
 
@@ -235,6 +246,9 @@ class QueueStore:
             progress=float(row["progress"]),
             phase=row["phase"],
             attempt_count=int(row["attempt_count"]),
+            attempts=json.loads(row["attempts_json"] or "[]")
+            if "attempts_json" in row.keys()
+            else [],
             retry_limit=int(row["retry_limit"]),
             temp_dir=row["temp_dir"],
             output_dir=row["output_dir"],
@@ -367,11 +381,65 @@ class QueueStore:
             if row is None:
                 return None
             now = _now()
+            attempt_number = int(row["attempt_count"]) + 1
+            attempts = json.loads(row["attempts_json"] or "[]")
+            attempts.append(
+                {
+                    "attempt_id": f"{row['job_id']}:{attempt_number}",
+                    "n": attempt_number,
+                    "encoder": "gpu",
+                    "started_at": now,
+                    "ended_at": None,
+                    "result": "running",
+                    "error": None,
+                }
+            )
             db.execute(
-                "UPDATE queue_jobs SET state=?, attempt_count=attempt_count+1, worker_pid=?, updated_at=? WHERE job_id=?",
-                (QueueState.PROCESSING.value, worker_pid, now, row["job_id"]),
+                "UPDATE queue_jobs SET state=?, attempt_count=?, attempts_json=?, worker_pid=?, updated_at=? WHERE job_id=?",
+                (
+                    QueueState.PROCESSING.value,
+                    attempt_number,
+                    json.dumps(attempts, ensure_ascii=False, sort_keys=True),
+                    worker_pid,
+                    now,
+                    row["job_id"],
+                ),
             )
         return self.get(row["job_id"])
+
+    def update_attempt(
+        self,
+        job_id: str,
+        *,
+        encoder: str | None = None,
+        result: str | None = None,
+        error: dict[str, Any] | None = None,
+        ended_at: str | None = None,
+    ) -> QueueJob:
+        """Persist the outcome of the current attempt without changing queue state."""
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                "SELECT attempts_json FROM queue_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            attempts = json.loads(row["attempts_json"] or "[]")
+            if attempts:
+                current = dict(attempts[-1])
+                if encoder is not None:
+                    current["encoder"] = encoder
+                if result is not None:
+                    current["result"] = result
+                if error is not None or result in {"succeeded", "failed", "cancelled", "interrupted"}:
+                    current["error"] = error
+                if ended_at is not None:
+                    current["ended_at"] = ended_at
+                attempts[-1] = current
+                db.execute(
+                    "UPDATE queue_jobs SET attempts_json=?, updated_at=? WHERE job_id=?",
+                    (json.dumps(attempts, ensure_ascii=False, sort_keys=True), _now(), job_id),
+                )
+        return self.get(job_id)
 
     def mark_interrupted_for_restart(self) -> list[QueueJob]:
         """Mark active work interrupted; never starts workers automatically."""
@@ -403,6 +471,26 @@ class QueueStore:
                         QueueState.COMMITTING.value,
                     ),
                 )
+                for row in rows:
+                    current = db.execute(
+                        "SELECT attempts_json FROM queue_jobs WHERE job_id=?",
+                        (row["job_id"],),
+                    ).fetchone()
+                    attempts = json.loads(current["attempts_json"] or "[]") if current else []
+                    if attempts and attempts[-1].get("result") == "running":
+                        attempts[-1] = {
+                            **attempts[-1],
+                            "result": "interrupted",
+                            "ended_at": stamp,
+                            "error": {
+                                "code": "PROCESS_INTERRUPTED",
+                                "message": "程序退出后需要用户确认才能继续",
+                            },
+                        }
+                        db.execute(
+                            "UPDATE queue_jobs SET attempts_json=? WHERE job_id=?",
+                            (json.dumps(attempts, ensure_ascii=False, sort_keys=True), row["job_id"]),
+                        )
         return [self.get(row["job_id"]) for row in rows]
 
     def confirm_recovery(self, job_ids: Iterable[str]) -> list[QueueJob]:

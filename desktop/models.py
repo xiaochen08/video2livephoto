@@ -66,6 +66,7 @@ class Segment:
     selected_for_export: bool = True
     cover_frame_index: int | None = None
     output_number: int = 1
+    name: str | None = None
 
     @property
     def frame_count(self) -> int:
@@ -85,6 +86,7 @@ class ProjectSnapshot:
     segments: list[Segment] = field(default_factory=list)
     detector_status: str = "not_connected"
     detector_version: str | None = None
+    color_override: str | None = None
     saved_revision: int = 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -104,5 +106,6 @@ class ProjectSnapshot:
             segments=[Segment(**item) for item in payload.get("segments", [])],
             detector_status=str(payload.get("detector_status", "not_connected")),
             detector_version=payload.get("detector_version"),
+            color_override=payload.get("color_override"),
             saved_revision=int(payload.get("saved_revision", 0)),
         )

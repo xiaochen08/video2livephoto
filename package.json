@@ -13,7 +13,8 @@
     "package:win": "npm run build:desktop && electron-builder --win nsis",
     "selftest": "node scripts/selftest.mjs",
     "test": "npm run build && npm run selftest",
-    "start": "electron ."
+    "start:desktop": "npm run build:desktop && electron .",
+    "start": "npm run start:desktop"
   },
   "dependencies": {
     "lucide-vue-next": "^1.0.0",

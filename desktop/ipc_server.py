@@ -26,6 +26,7 @@ from core.queue import QueueRunner, QueueState, QueueStore, compute_snapshot_has
 from core.media.process import CancellationToken
 from core.media.probe import probe_media
 from core.media.source_identity import capture_identity, identities_match
+from core.media.toolchain import Toolchain, probe_gpu_encoder
 
 from .adapter_contract import (
     AdapterContractError,
@@ -39,6 +40,7 @@ from .adapter_contract import (
 from .export_pipeline import export_queue_job
 from .models import M3ProjectError, AudioConflictError
 from .service import M3ProjectService
+from .storage import default_storage_root
 
 
 class JsonlIpcServer:
@@ -103,12 +105,61 @@ class JsonlIpcServer:
         self._subscriptions: set[str] = set()
         self._batch_meta: dict[str, dict[str, Any]] = {}
         self._task_snapshots: dict[str, dict[str, Any]] = {}
+        self._gpu_capability: dict[str, Any] | None = None
         self._watcher_stop = threading.Event()
         self._watcher: threading.Thread | None = None
         self._settings_path = Path(
             os.environ.get("VIDEO2LIVEPHOTO_APP_DATA_DIR", str(Path.home() / ".video2livephoto"))
         ) / "settings.json"
         self._settings_path.parent.mkdir(parents=True, exist_ok=True)
+        self._recent_projects_path = self._settings_path.parent / "recent-projects.json"
+        self._load_recent_projects()
+
+    def _load_recent_projects(self) -> None:
+        try:
+            payload = json.loads(self._recent_projects_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        entries = payload.get("projects") if isinstance(payload, dict) else payload
+        if not isinstance(entries, list):
+            return
+        for entry in entries[:50]:
+            if isinstance(entry, dict):
+                project_id = str(entry.get("project_id") or "").strip()
+                project_path = str(entry.get("path") or "").strip()
+            else:
+                project_id, project_path = "", str(entry).strip()
+            if not project_path:
+                continue
+            if project_id:
+                self._project_registry[project_id] = project_path
+                self._recent_projects.append(project_id)
+
+    def _persist_recent_projects(self) -> None:
+        entries = [
+            {"project_id": project_id, "path": self._project_registry.get(project_id)}
+            for project_id in self._recent_projects[:50]
+            if self._project_registry.get(project_id)
+        ]
+        partial = self._recent_projects_path.with_suffix(".json.partial")
+        try:
+            partial.write_text(
+                json.dumps({"version": 1, "projects": entries}, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            os.replace(partial, self._recent_projects_path)
+        except OSError:
+            try:
+                partial.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _remember_project(self, project_id: str, project_path: str | Path) -> None:
+        project_id = str(project_id)
+        self._project_registry[project_id] = str(Path(project_path).resolve())
+        self._recent_projects = [project_id] + [item for item in self._recent_projects if item != project_id]
+        self._persist_recent_projects()
 
     def _close_project(self) -> None:
         with self._preview_lock:
@@ -126,12 +177,15 @@ class JsonlIpcServer:
             self.service.close()
             self.service = None
         self._subscriptions.clear()
+        self._batch_meta.clear()
+        self._task_snapshots.clear()
 
     def _configure_queue(self, project_path: str | Path) -> None:
         self.project_path = Path(project_path).resolve()
         self.queue_store = QueueStore(self.project_path.with_suffix(".queue.sqlite3"))
         self.queue_store.mark_interrupted_for_restart()
         assert self.service is not None
+        self._rebuild_batch_meta_from_queue()
 
         def promote_after_success(_job, _result) -> int:
             # Start conservatively with one encoder.  A second worker is only
@@ -161,6 +215,28 @@ class JsonlIpcServer:
         if self.logger:
             log_event(self.logger, "queue.configure", project_path=str(self.project_path), worker_limit=self.runner.worker_limit)
         self._start_task_watcher()
+
+    def _rebuild_batch_meta_from_queue(self) -> None:
+        """Reconstruct batch identities from durable job snapshots after restart."""
+        if self.queue_store is None or self.service is None:
+            return
+        project_id = self.service.snapshot.project_id
+        grouped: dict[str, list[Any]] = {}
+        for job in self.queue_store.list():
+            snapshot = job.snapshot or {}
+            if snapshot.get("project_id") != project_id:
+                continue
+            batch_id = str(snapshot.get("batch_id") or f"legacy:{project_id}")
+            grouped.setdefault(batch_id, []).append(job)
+        for batch_id, jobs in grouped.items():
+            existing = self._batch_meta.get(batch_id, {})
+            self._batch_meta[batch_id] = {
+                **existing,
+                "project_id": project_id,
+                "job_ids": [job.job_id for job in jobs],
+                "created_at": existing.get("created_at") or min(job.created_at for job in jobs),
+                "seq": int(existing.get("seq", 0)),
+            }
 
     def _start_task_watcher(self) -> None:
         if self._watcher is not None and self._watcher.is_alive():
@@ -238,44 +314,90 @@ class JsonlIpcServer:
         committed_paths = [str(item) for item in (result.get("target_paths") or [])]
         committed_paths.extend([str(result.get("manifest_path"))] if result.get("manifest_path") else [])
         artifacts = []
-        for kind, suffixes in (("mp4", (".mp4",)), ("jpg", (".jpg", ".jpeg")), ("mov", (".mov",))):
+        has_legacy_pair = any(
+            Path(path).suffix.lower() in {".jpg", ".jpeg", ".mov"}
+            for path in committed_paths
+        ) and not any(Path(path).suffix.lower() == ".livp" for path in committed_paths)
+        livephoto_specs = (
+            (("jpg", (".jpg", ".jpeg")), ("mov", (".mov",)))
+            if has_legacy_pair
+            else (("livp", (".livp",)),)
+        )
+        for kind, suffixes in (("mp4", (".mp4",)), *livephoto_specs):
             value = next((path for path in committed_paths if Path(path).suffix.lower() in suffixes), None)
             name = Path(str(value)).name if value else f"{job.clip_id}.{kind}"
             artifacts.append(
                 {
                     "kind": kind,
                     "file_name": name,
-                    "rel_dir": "LivePhoto" if kind in {"jpg", "mov"} else "视频片段",
+                    "rel_dir": "LivePhoto" if kind == "livp" else "视频片段",
                     "status": "committed" if job.state == QueueState.SUCCEEDED else ("failed" if job.state == QueueState.FAILED else "pending"),
                     "size_bytes": str(Path(str(value)).stat().st_size) if value and Path(str(value)).is_file() else None,
                 }
             )
         attempt_id = f"{job.job_id}:{job.attempt_count}" if job.attempt_count else None
-        attempts = []
-        if job.attempt_count:
+        attempts = [dict(item) for item in (getattr(job, "attempts", None) or [])]
+        if job.attempt_count and not attempts:
+            result_encoder = str(result.get("encoder") or "").lower()
+            encoder = (
+                "gpu"
+                if result_encoder in {"h264_nvenc", "h264_qsv", "h264_amf"}
+                else "cpu"
+            )
+            if not result_encoder and job.state in {
+                QueueState.PROCESSING,
+                QueueState.VALIDATING,
+                QueueState.COMMITTING,
+            }:
+                # The queue always tries the GPU candidates before the CPU
+                # fallback.  Keep the live attempt honest until the result
+                # records the concrete encoder name.
+                encoder = "gpu"
             attempts.append(
                 {
                     "attempt_id": attempt_id,
                     "n": job.attempt_count,
-                    "encoder": "cpu",
+                    "encoder": encoder,
                     "started_at": job.created_at,
                     "ended_at": job.updated_at if job.state in {QueueState.SUCCEEDED, QueueState.FAILED, QueueState.INTERRUPTED, QueueState.SKIPPED} else None,
                     "result": "succeeded" if job.state == QueueState.SUCCEEDED else ("failed" if job.state == QueueState.FAILED else ("cancelled" if job.error_code == "CANCELLED" else "running")),
                     "error": error_payload(M3ProjectError(job.error_code or "WORKER_FAILED", job.error_message or "任务失败")) if job.state == QueueState.FAILED else None,
                 }
             )
+        if attempts:
+            attempt_id = str(attempts[-1].get("attempt_id") or attempt_id)
+            for attempt in attempts:
+                if isinstance(attempt.get("error"), dict) and attempt.get("error", {}).get("code"):
+                    attempt["error"] = error_payload(
+                        M3ProjectError(
+                            str(attempt["error"]["code"]),
+                            str(attempt["error"].get("message") or attempt["error"]["code"]),
+                        )
+                    )
         error = None
         if job.error_code:
             error = error_payload(M3ProjectError(job.error_code, job.error_message or job.error_code))
         progress = None
         if job.state in {QueueState.PROCESSING, QueueState.VALIDATING, QueueState.COMMITTING, QueueState.SUCCEEDED}:
-            progress = {"kind": "frames", "done": int(round(job.progress * max(int(segment.get("end_index", 0)) - int(segment.get("start_index", 0)), 1))), "total": max(int(segment.get("end_index", 0)) - int(segment.get("start_index", 0)), 1)}
+            total_frames = max(
+                int(segment.get("end_index", 0)) - int(segment.get("start_index", 0)),
+                1,
+            )
+            if job.phase == "encoding-starting":
+                progress = {"kind": "unknown", "note": "正在启动编码器；无响应将自动回退 CPU"}
+            elif job.phase == "encoding":
+                encoding_ratio = min(max((job.progress - 0.05) / 0.60, 0.0), 1.0)
+                done_frames = int(round(encoding_ratio * total_frames))
+                progress = {"kind": "frames", "done": done_frames, "total": total_frames}
+            else:
+                done_frames = total_frames
+                progress = {"kind": "frames", "done": done_frames, "total": total_frames}
         return {
             "job_id": job.job_id,
             "batch_id": batch_id,
             "clip_id": job.clip_id,
             "display_index": int(segment.get("output_number", 0)),
-            "file_stem": job.clip_id,
+            "file_stem": str(segment.get("file_stem") or job.clip_id),
             "stage": self._stage_for_job(job),
             "progress": progress,
             "attempts": attempts,
@@ -287,7 +409,17 @@ class JsonlIpcServer:
             "cancel_requested": bool(job.error_code == "CANCEL_REQUESTED"),
             "verification": {
                 "local": "passed" if job.state == QueueState.SUCCEEDED else ("failed" if job.state == QueueState.FAILED else "pending"),
-                "local_report_id": None,
+                "local_report_id": (
+                    str(Path(getattr(job, "output_dir", "") or "") / "导出报告.json")
+                    if job.state in {
+                        QueueState.SUCCEEDED,
+                        QueueState.FAILED,
+                        QueueState.SKIPPED,
+                        QueueState.INTERRUPTED,
+                    }
+                    and getattr(job, "output_dir", None)
+                    else None
+                ),
                 "devices": {"iphone": "unverified", "wechat_moments": "unverified", "xiaohongshu": "unverified", "douyin": "unverified"},
             },
             "replaces_previous": False,
@@ -320,7 +452,7 @@ class JsonlIpcServer:
                     "end_frame": int((job.snapshot.get("segment") or {}).get("end_index", 0)),
                     "audio": "source" if (job.snapshot.get("segment") or {}).get("audio_enabled", True) else "muted",
                     "cover_frame": int((job.snapshot.get("segment") or {}).get("cover_frame_index") or (job.snapshot.get("segment") or {}).get("start_index", 0)),
-                    "file_stem": job.clip_id,
+                    "file_stem": str((job.snapshot.get("segment") or {}).get("file_stem") or job.clip_id),
                     "pair_id": job.clip_id,
                 }
                 for job in selected
@@ -370,23 +502,59 @@ class JsonlIpcServer:
             if previous is None:
                 self._task_snapshots[batch_id] = deepcopy(batch)
                 self._emit("v2lp:tasks:event", {"type": "batch_snapshot", "project_id": project_id, "batch": batch})
+                if batch.get("state") == "completed":
+                    self._write_export_report(batch_id)
                 continue
             old_jobs = {item["job_id"]: item for item in previous.get("jobs", [])}
+            meta = self._batch_meta.setdefault(batch_id, {})
+            if (
+                previous.get("state") != batch.get("state")
+                or previous.get("active_slots") != batch.get("active_slots")
+            ):
+                meta["seq"] = int(meta.get("seq", 0)) + 1
+                batch["seq"] = meta["seq"]
+                self._emit(
+                    "v2lp:tasks:event",
+                    {
+                        "type": "batch_patch",
+                        "project_id": project_id,
+                        "batch_id": batch_id,
+                        "seq": batch["seq"],
+                        "patch": {
+                            "state": batch.get("state"),
+                            "active_slots": batch.get("active_slots", 0),
+                        },
+                    },
+                )
             for job in batch["jobs"]:
                 old = old_jobs.get(job["job_id"])
                 if old == job:
                     continue
-                meta = self._batch_meta.setdefault(batch_id, {})
                 meta["seq"] = int(meta.get("seq", 0)) + 1
                 batch["seq"] = meta["seq"]
                 self._emit("v2lp:tasks:event", {"type": "job_patch", "project_id": project_id, "batch_id": batch_id, "seq": batch["seq"], "job_id": job["job_id"], "attempt_id": job.get("current_attempt_id"), "patch": job})
+            if batch.get("state") == "completed":
+                self._write_export_report(batch_id)
             self._task_snapshots[batch_id] = deepcopy(batch)
 
-    def _write_export_report(self) -> str | None:
+    def _write_export_report(self, batch_id: str | None = None) -> str | None:
         """Write a batch report only after every queued job reaches a terminal state."""
         if self.queue_store is None:
             return None
         jobs = self.queue_store.list()
+        if batch_id:
+            meta = self._batch_meta.get(batch_id, {})
+            ids = set(meta.get("job_ids") or [])
+            if ids:
+                jobs = [job for job in jobs if job.job_id in ids]
+            else:
+                project_id = str(meta.get("project_id") or "")
+                jobs = [
+                    job
+                    for job in jobs
+                    if (job.snapshot or {}).get("project_id") == project_id
+                    and str((job.snapshot or {}).get("batch_id") or f"legacy:{project_id}") == batch_id
+                ]
         if not jobs or any(
             job.state
             in {
@@ -483,7 +651,7 @@ class JsonlIpcServer:
             path = self._resolve_project_path(project_id)
             self._close_project()
             self.service = M3ProjectService.open_project(path)
-            self._project_registry[self.service.snapshot.project_id] = str(path)
+            self._remember_project(self.service.snapshot.project_id, path)
             self._configure_queue(path)
         if self.service is None:
             raise M3ProjectError("PROJECT_NOT_OPEN", "请先导入或打开项目。")
@@ -492,6 +660,7 @@ class JsonlIpcServer:
         return self.service
 
     def _contract_connection(self) -> dict[str, Any]:
+        gpu = self._gpu_capability_info()
         return {
             "mode": "desktop",
             "app_version": os.environ.get("VIDEO2LIVEPHOTO_APP_VERSION", "1.0.0-candidate"),
@@ -499,27 +668,129 @@ class JsonlIpcServer:
             "capabilities": {
                 "backend_version": "m3-python+queue.v1",
                 "frame_accurate_preview": True,
-                "gpu": {"available": False, "verified_encoder": None, "note": "未在当前运行环境验证 GPU 编码器。"},
+                "gpu": gpu,
                 "hdr_output": {"supported": False, "note": "当前导出链路仅能证明 SDR/源色彩路径。"},
                 "declick_audio": False,
                 "max_parallel_jobs": self.runner.worker_limit if self.runner else 1,
-                "livephoto_hint": {"short_below_ms": 1000, "long_above_ms": 15000},
+                "livephoto_hint": {"short_below_ms": 1000, "long_above_ms": 3000},
             },
         }
 
+    def _gpu_capability_info(self) -> dict[str, Any]:
+        if self._gpu_capability is not None:
+            return dict(self._gpu_capability)
+        try:
+            toolchain = self.service.toolchain if self.service is not None else Toolchain.discover()
+            encoder, note = probe_gpu_encoder(toolchain)
+        except Exception as exc:
+            encoder = None
+            note = f"GPU 编码器自检失败，将使用 CPU 回退路径：{exc}"
+        self._gpu_capability = {
+            "available": encoder is not None,
+            "verified_encoder": encoder,
+            "note": None if encoder is not None else note,
+        }
+        return dict(self._gpu_capability)
+
     def _settings_defaults(self) -> dict[str, Any]:
+        storage_root = default_storage_root()
         defaults = {
-            "default_output_dir": str(Path.home() / "Videos" / "Video2LivePhoto"),
+            "default_output_dir": str(storage_root / "Exports"),
             "default_quality": "source",
             "default_color": "sdr_rec709",
             "cache_limit_gb": 20,
             "proxy_resolution": "720p",
         }
         try:
-            defaults.update(json.loads(self._settings_path.read_text(encoding="utf-8")))
+            persisted = json.loads(self._settings_path.read_text(encoding="utf-8"))
+            if isinstance(persisted, dict):
+                legacy_default = (Path.home() / "Videos" / "Video2LivePhoto").resolve()
+                stored_output = persisted.get("default_output_dir")
+                if isinstance(stored_output, str) and stored_output.strip():
+                    try:
+                        is_legacy_default = Path(stored_output).resolve() == legacy_default
+                    except OSError:
+                        is_legacy_default = False
+                    if not is_legacy_default:
+                        defaults["default_output_dir"] = stored_output
+                defaults.update(
+                    {
+                        key: value
+                        for key, value in persisted.items()
+                        if key != "default_output_dir"
+                    }
+                )
         except (OSError, json.JSONDecodeError):
             pass
         return defaults
+
+    def _get_queue_job(self, job_id: str):
+        if self.queue_store is None:
+            raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
+        try:
+            return self.queue_store.get(str(job_id))
+        except KeyError as exc:
+            raise M3ProjectError("JOB_NOT_FOUND", f"找不到导出任务：{job_id}") from exc
+
+    @staticmethod
+    def _committed_artifact_path(job: Any, kind: str) -> Path:
+        suffixes = {
+            "mp4": {".mp4"},
+            "livp": {".livp"},
+            # Read-only compatibility for exports created before the single
+            # file LIVP contract. New exports never publish these artifacts.
+            "jpg": {".jpg", ".jpeg"},
+            "mov": {".mov"},
+        }.get(kind)
+        if suffixes is None:
+            raise M3ProjectError("ARTIFACT_KIND_INVALID", "不支持的产物类型。", details={"kind": kind})
+        if job.state != QueueState.SUCCEEDED:
+            raise M3ProjectError("ARTIFACT_NOT_COMMITTED", "该片段尚未提交成功，暂时不能打开。")
+        output_root = Path(job.output_dir or "").resolve()
+        result = job.result or {}
+        candidates = [str(item) for item in (result.get("target_paths") or [])]
+        if result.get("manifest_path"):
+            candidates.append(str(result["manifest_path"]))
+        for value in candidates:
+            candidate = Path(value)
+            if not candidate.is_absolute():
+                continue
+            candidate = candidate.resolve()
+            try:
+                candidate.relative_to(output_root)
+            except ValueError:
+                continue
+            if candidate.suffix.lower() in suffixes and candidate.is_file():
+                return candidate
+        raise M3ProjectError("ARTIFACT_NOT_FOUND", "已提交记录中找不到对应产物文件。", details={"kind": kind})
+
+    def _output_directory_for_request(self, params: dict[str, Any]) -> Path:
+        project_id = str(params.get("project_id") or "")
+        job_id = str(params.get("job_id") or "")
+        if job_id:
+            job = self._get_queue_job(job_id)
+            if project_id and (job.snapshot or {}).get("project_id") != project_id:
+                raise M3ProjectError("PROJECT_JOB_MISMATCH", "任务不属于当前项目。")
+        else:
+            if self.queue_store is None:
+                raise M3ProjectError("QUEUE_NOT_READY", "导出队列尚未初始化。")
+            jobs = [
+                item
+                for item in self.queue_store.list()
+                if (item.snapshot or {}).get("project_id") == project_id and item.output_dir
+            ]
+            if not jobs:
+                raise M3ProjectError("OUTPUT_NOT_FOUND", "当前项目还没有可定位的导出目录。")
+            job = max(jobs, key=lambda item: str(item.created_at))
+        output_dir = Path(job.output_dir or "").resolve()
+        if not output_dir.is_dir():
+            raise M3ProjectError("OUTPUT_NOT_FOUND", "导出目录不存在。")
+        return output_dir
+
+    @staticmethod
+    def _color_override_for_snapshot(snapshot: Any) -> str | None:
+        value = getattr(snapshot, "color_override", None)
+        return str(value) if value else None
 
     @staticmethod
     def _safe_export_component(value: str, fallback: str = "项目") -> str:
@@ -542,6 +813,38 @@ class JsonlIpcServer:
             candidate.mkdir(parents=True, exist_ok=False)
         return candidate.resolve()
 
+    @staticmethod
+    def _export_intent_key(
+        service: M3ProjectService,
+        selected: list[Any],
+        settings: dict[str, Any],
+        root: Path,
+    ) -> str:
+        """Hash only stable export intent, excluding generated batch paths and IDs."""
+        payload = {
+            "project_id": service.snapshot.project_id,
+            "source_identity": service.snapshot.source_identity,
+            "edit_version": int(getattr(service.snapshot, "saved_revision", 0)),
+            "clips": [
+                {
+                    "clip_id": segment.clip_id,
+                    "start_index": segment.start_index,
+                    "end_index": segment.end_index,
+                    "audio_enabled": bool(segment.audio_enabled),
+                    "cover_frame_index": segment.cover_frame_index,
+                    "output_number": segment.output_number,
+                }
+                for segment in selected
+            ],
+            "settings": {
+                "output_root": str(root),
+                "quality": str(settings.get("quality", "source")),
+                "color": str(settings.get("color", "sdr_rec709")),
+                "name_base": str(settings.get("name_base") or Path(service.snapshot.source_path).stem),
+            },
+        }
+        return compute_snapshot_hash(payload)
+
     def _run_analysis(self, analysis_id: str, params: dict[str, Any], token: CancellationToken, epoch: int) -> dict[str, Any]:
         source_path = str(self._resolve_media_path(params))
         request_id = str(params.get("request_id") or "")
@@ -549,11 +852,17 @@ class JsonlIpcServer:
         if project_path_value:
             project_path = Path(project_path_value)
         else:
-            root = Path(os.environ.get("VIDEO2LIVEPHOTO_PROJECT_DIR", str(Path.home() / ".video2livephoto" / "projects")))
+            root = Path(
+                os.environ.get(
+                    "VIDEO2LIVEPHOTO_PROJECT_DIR",
+                    str(default_storage_root() / "Projects"),
+                )
+            )
             root.mkdir(parents=True, exist_ok=True)
             project_path = root / f"{uuid.uuid4()}.sqlite3"
         cache_root = params.get("cache_root") or str(project_path.with_suffix(".m1-cache"))
         selected_stream = None if params.get("video_stream_index") is None else int(params["video_stream_index"])
+        color_override = str(params.get("color_override") or "").strip() or None
         if selected_stream is not None:
             cache_path = Path(str(cache_root))
             cache_root = str(cache_path.with_name(f"{cache_path.name}-stream-{selected_stream}"))
@@ -601,18 +910,22 @@ class JsonlIpcServer:
                 cache_root=cache_root,
                 token=token,
                 video_stream_index=selected_stream,
+                color_override=color_override,
                 progress_callback=on_progress,
             )
             with self._state_lock:
                 if epoch == self._analysis_epoch:
                     self._close_project()
                     self.service = service
-                    self._project_registry[service.snapshot.project_id] = str(project_path.resolve())
-                    self._recent_projects = [service.snapshot.project_id] + [item for item in self._recent_projects if item != service.snapshot.project_id]
+                    self._remember_project(service.snapshot.project_id, project_path)
                     self._configure_queue(project_path)
                 else:
                     service.close()
-            result = {"project_id": service.snapshot.project_id, "warnings": [], "project_path": str(project_path.resolve())}
+            result = {
+                "project_id": service.snapshot.project_id,
+                "warnings": ([{"code": "COLOR_SELECTED_BY_USER", "message": "已按导入时选择的色彩类型保存项目。"}] if color_override else []),
+                "project_path": str(project_path.resolve()),
+            }
             for state in stage_state.values():
                 state["status"] = "done"
             stage_state["frame_index"]["progress"] = {"done": service.snapshot.frame_count, "total": service.snapshot.frame_count, "unit": "frames"}
@@ -703,6 +1016,7 @@ class JsonlIpcServer:
                 [str(item) for item in cmd.get("clip_ids", [])],
                 audio_enabled=(patch["audio"] == "source") if "audio" in patch else None,
                 selected_for_export=bool(patch["export_selected"]) if "export_selected" in patch else None,
+                **({"name": patch["name"]} if "name" in patch else {}),
             )
         elif kind == "set_cover":
             service.set_segment_cover(str(cmd["clip_id"]), cmd.get("frame"))
@@ -744,11 +1058,55 @@ class JsonlIpcServer:
             pass
         if root == source or source in root.parents:
             raise M3ProjectError("OUTPUT_OVERWRITES_SOURCE", "导出目录不能位于源文件路径内。")
+        export_intent_key = self._export_intent_key(service, selected, settings, root)
+        prior_jobs = [
+            job
+            for job in self.queue_store.list()
+            if (job.snapshot or {}).get("export_intent_key") == export_intent_key
+        ]
+        if prior_jobs:
+            grouped: dict[str, list[Any]] = {}
+            for job in prior_jobs:
+                prior_batch_id = str((job.snapshot or {}).get("batch_id") or "")
+                if prior_batch_id:
+                    grouped.setdefault(prior_batch_id, []).append(job)
+            complete_groups = [
+                (batch_id, jobs)
+                for batch_id, jobs in grouped.items()
+                if {job.clip_id for job in jobs} >= {segment.clip_id for segment in selected}
+            ]
+            if complete_groups:
+                batch_id, jobs = max(complete_groups, key=lambda item: max(job.created_at for job in item[1]))
+                self._batch_meta.setdefault(
+                    batch_id,
+                    {
+                        "project_id": service.snapshot.project_id,
+                        "job_ids": [job.job_id for job in jobs],
+                        "created_at": min(job.created_at for job in jobs),
+                        "seq": 0,
+                    },
+                )
+                output_dir = Path(jobs[0].output_dir or "").resolve()
+                snapshot_id = str(self._batch_meta[batch_id].get("snapshot", {}).get("snapshot_id") or f"snapshot:{batch_id}")
+                return {
+                    "ok": True,
+                    "batch_id": batch_id,
+                    "snapshot_id": snapshot_id,
+                    "output_dir": str(output_dir),
+                    "output_root": str(root),
+                    "deduplicated": True,
+                }
         batch_id = str(uuid.uuid4())
         output_dir = self._new_export_directory(root, Path(service.snapshot.source_path).stem, batch_id)
         snapshot_id = str(uuid.uuid4())
         color_mode = "hdr" if settings.get("color") == "hdr_keep" else "sdr"
-        temp_dir = service.store.path.parent / f".{service.store.path.stem}.export-tmp"
+        color_override = self._color_override_for_snapshot(service.snapshot)
+        temp_dir = output_dir.parent / f".{output_dir.name}.export-tmp"
+        name_base = self._safe_export_component(
+            str(settings.get("name_base") or Path(service.snapshot.source_path).stem),
+            "项目",
+        )
+        self._mark_export_report_in_progress(output_dir, service.snapshot.project_id)
         jobs = []
         clip_snapshots = []
         for segment in selected:
@@ -757,11 +1115,14 @@ class JsonlIpcServer:
                 "frame_index_path": service.snapshot.frame_index_path,
                 "project_id": service.snapshot.project_id,
                 "batch_id": batch_id,
+                "export_intent_key": export_intent_key,
                 "segment": segment.__dict__.copy(),
                 "temp_root": str(temp_dir),
                 "output_dir": str(output_dir),
                 "color_mode": color_mode,
+                "source_color_override": color_override,
             }
+            job_snapshot["segment"]["file_stem"] = f"{name_base}_{int(segment.output_number):03d}"
             clip_snapshots.append({
                 "clip_id": segment.clip_id,
                 "display_index": segment.output_number,
@@ -769,10 +1130,15 @@ class JsonlIpcServer:
                 "end_frame": segment.end_index,
                 "audio": "source" if segment.audio_enabled else "muted",
                 "cover_frame": segment.cover_frame_index if segment.cover_frame_index is not None else segment.start_index,
-                "file_stem": segment.clip_id,
+                "file_stem": job_snapshot["segment"]["file_stem"],
                 "pair_id": segment.clip_id,
             })
-            existing = self.queue_store.find_by_snapshot_hash(compute_snapshot_hash(job_snapshot)) if self.queue_store else []
+            existing = [
+                job
+                for job in self.queue_store.list()
+                if (job.snapshot or {}).get("export_intent_key") == export_intent_key
+                and (job.snapshot.get("segment") or {}).get("clip_id") == segment.clip_id
+            ] if self.queue_store else []
             jobs.append(existing[0] if existing else self.queue_store.enqueue(clip_id=segment.clip_id, snapshot=job_snapshot, source_identity=service.snapshot.source_identity, temp_dir=str(temp_dir), output_dir=str(output_dir)))
         self._batch_meta[batch_id] = {
             "project_id": service.snapshot.project_id,
@@ -934,6 +1300,7 @@ class JsonlIpcServer:
         if method == "projects.removeRecent":
             project_id = str(params.get("project_id") or "")
             self._recent_projects = [item for item in self._recent_projects if item != project_id]
+            self._persist_recent_projects()
             return {"ok": True}
         if method == "projects.save":
             service = self._ensure_project(str(params.get("project_id") or ""))
@@ -991,6 +1358,13 @@ class JsonlIpcServer:
         if method == "preview.cancel":
             return self._cancel_preview(request, params)
         if method == "preview.getFrame":
+            active_jobs = tuple(self.runner.running_job_ids) if self.runner else ()
+            if active_jobs:
+                raise M3ProjectError(
+                    "PREVIEW_BUSY",
+                    "导出期间暂停帧预览解码，导出完成后会自动恢复。",
+                    details={"active_job_count": len(active_jobs), "retry_after_ms": 1000},
+                )
             project_id = str(params.get("project_id") or "")
             if preview_token is not None:
                 if preview_token.cancelled:
@@ -1014,9 +1388,24 @@ class JsonlIpcServer:
             output_dir = Path(configured_root or str(self._settings_defaults()["default_output_dir"])).resolve()
             free = shutil.disk_usage(output_dir.parent if output_dir.parent.exists() else service.store.path.parent).free
             issues = []
+            selected_stream = next(
+                (
+                    stream
+                    for stream in (service.snapshot.probe.get("streams") or [])
+                    if int(stream.get("index", -1)) == int(service.snapshot.probe.get("selected_video_stream", -2))
+                    and stream.get("codec_type") == "video"
+                ),
+                None,
+            )
+            source_color = (selected_stream or {}).get("color") or {}
+            if not service.snapshot.color_override and (
+                source_color.get("transfer") in {None, "", "unknown"}
+                or source_color.get("primaries") in {None, "", "unknown"}
+            ):
+                issues.append({"level": "error", "code": "COLOR_SELECTION_REQUIRED", "message": "项目导入时未确认源视频色彩。请重新导入，并在导入阶段选择 SDR / Rec.709、HDR10 / PQ 或 HDR / HLG。", "action": None})
             if service.pending_reviews():
                 issues.append({"level": "warning", "code": "PENDING_REVIEW", "message": "仍有待审核切点。", "action": "review"})
-            return {"ok": True, "preflight": {"ok": not any(item["level"] == "error" for item in issues), "issues": issues, "free_space_bytes": str(free), "estimated_bytes": None, "existing_outputs": {"count": len(list(output_dir.glob("*"))) if output_dir.is_dir() else 0, "externally_modified": 0, "locked": 0}, "sample_names": {"mp4": "clip.mp4", "jpg": "clip.JPG", "mov": "clip.MOV"}}}
+            return {"ok": True, "preflight": {"ok": not any(item["level"] == "error" for item in issues), "issues": issues, "free_space_bytes": str(free), "estimated_bytes": None, "existing_outputs": {"count": len(list(output_dir.glob("*"))) if output_dir.is_dir() else 0, "externally_modified": 0, "locked": 0}, "sample_names": {"mp4": "clip.mp4", "livp": "clip.livp"}}}
         if method == "export.createBatch":
             return self._create_contract_batch(params)
         if method == "tasks.subscribe":
@@ -1074,13 +1463,23 @@ class JsonlIpcServer:
         if method == "recovery.inspect":
             service = self._ensure_project(str(params.get("project_id") or ""))
             jobs = [job for job in (self.queue_store.list() if self.queue_store else []) if (job.snapshot or {}).get("project_id") == service.snapshot.project_id and job.state == QueueState.INTERRUPTED]
+            batch_id = next(
+                (
+                    batch
+                    for batch, meta in self._batch_meta.items()
+                    if meta.get("project_id") == service.snapshot.project_id
+                    and any(job.job_id in set(meta.get("job_ids") or []) for job in jobs)
+                ),
+                None,
+            )
             for index, job in enumerate(jobs, 1):
                 self._emit("v2lp:recovery:progress", {"project_id": service.snapshot.project_id, "checked": index, "total": len(jobs), "current": job.job_id})
-            return {"ok": True, "summary": {"project_id": service.snapshot.project_id, "batch_id": None, "interrupted_at": datetime.now(timezone.utc).isoformat(), "verified_success": [], "needs_redo": [{"clip_id": job.clip_id, "display_index": int((job.snapshot.get("segment") or {}).get("output_number", 0)), "reason": job.error_message or "任务中断"} for job in jobs], "reusable_intermediate": [], "needs_relocate": [], "commit_unknown": [], "pending_actions": ["用户确认后继续剩余任务"] if jobs else []}}
+            return {"ok": True, "summary": {"project_id": service.snapshot.project_id, "batch_id": batch_id, "interrupted_at": datetime.now(timezone.utc).isoformat(), "verified_success": [], "needs_redo": [{"clip_id": job.clip_id, "display_index": int((job.snapshot.get("segment") or {}).get("output_number", 0)), "reason": job.error_message or "任务中断"} for job in jobs], "reusable_intermediate": [], "needs_relocate": [], "commit_unknown": [], "pending_actions": ["用户确认后继续剩余任务"] if jobs else []}}
         if method in {"recovery.continueRemaining", "recovery.dismiss"}:
             if method.endswith("dismiss"):
                 return {"ok": True}
             project_id = str(params.get("project_id") or "")
+            self._ensure_project(project_id)
             batches = [batch_id for batch_id, meta in self._batch_meta.items() if meta.get("project_id") == project_id]
             if not batches:
                 raise M3ProjectError("NOTHING_TO_CONTINUE", "没有待恢复的任务。")
@@ -1095,9 +1494,19 @@ class JsonlIpcServer:
             job = self.queue_store.get(str(params.get("job_id")))
             report = Path(job.output_dir or "") / "导出报告.json"
             if not report.is_file():
+                self._write_export_report(
+                    str((job.snapshot or {}).get("batch_id") or f"legacy:{(job.snapshot or {}).get('project_id', '')}")
+                )
+            if not report.is_file():
                 raise M3ProjectError("REPORT_NOT_FOUND", "导出报告尚未生成。")
             return {"ok": True, "body": report.read_text(encoding="utf-8")}
-        if method in {"files.openArtifact", "files.revealOutput", "files.pickOutputDir"}:
+        if method == "files.openArtifact":
+            job = self._get_queue_job(str(params.get("job_id") or ""))
+            kind = str(params.get("kind") or "").lower()
+            return {"ok": True, "path": str(self._committed_artifact_path(job, kind))}
+        if method == "files.revealOutput":
+            return {"ok": True, "path": str(self._output_directory_for_request(params))}
+        if method == "files.pickOutputDir":
             raise AdapterContractError("FILE_ACTION_REQUIRES_ELECTRON", "文件打开与目录选择必须由 Electron 主进程执行。")
         if method == "settings.get":
             return {"ok": True, "settings": self._settings_defaults()}
@@ -1208,11 +1617,10 @@ class JsonlIpcServer:
                 params["source_path"],
                 project_path=params["project_path"],
                 cache_root=params.get("cache_root"),
+                color_override=(str(params.get("color_override") or "").strip() or None),
             )
             self._configure_queue(params["project_path"])
-            self._project_registry[self.service.snapshot.project_id] = str(Path(params["project_path"]).resolve())
-            if self.service.snapshot.project_id not in self._recent_projects:
-                self._recent_projects.insert(0, self.service.snapshot.project_id)
+            self._remember_project(self.service.snapshot.project_id, params["project_path"])
             return {"ok": True, "project": self.service.to_dict()}
         if method == "open":
             if self.logger:
@@ -1220,9 +1628,7 @@ class JsonlIpcServer:
             self._close_project()
             self.service = M3ProjectService.open_project(params["project_path"])
             self._configure_queue(params["project_path"])
-            self._project_registry[self.service.snapshot.project_id] = str(Path(params["project_path"]).resolve())
-            if self.service.snapshot.project_id not in self._recent_projects:
-                self._recent_projects.insert(0, self.service.snapshot.project_id)
+            self._remember_project(self.service.snapshot.project_id, params["project_path"])
             return {"ok": True, "project": self.service.to_dict()}
         if self.service is None:
             raise M3ProjectError("PROJECT_NOT_OPEN", "请先导入或打开项目。")
@@ -1294,9 +1700,7 @@ class JsonlIpcServer:
             self._mark_export_report_in_progress(
                 output_dir, str(project.get("project_id"))
             )
-            temp_dir = (
-                self.project_path.parent / f".{self.project_path.stem}.export-tmp"
-            )
+            temp_dir = output_dir.resolve().parent / f".{output_dir.name}.export-tmp"
             jobs = []
             for segment in project["segments"]:
                 if not segment.get("selected_for_export", True):
@@ -1309,6 +1713,7 @@ class JsonlIpcServer:
                     "temp_root": str(temp_dir),
                     "output_dir": str(output_dir),
                     "color_mode": params.get("color_mode", "warn"),
+                    "source_color_override": self._color_override_for_snapshot(self.service.snapshot),
                 }
                 snapshot_hash = compute_snapshot_hash(job_snapshot)
                 existing = self.queue_store.find_by_snapshot_hash(snapshot_hash)

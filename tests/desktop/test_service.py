@@ -67,6 +67,26 @@ def test_import_runs_m2_and_decodes_bounded_preview(
         service.close()
 
 
+def test_import_persists_user_color_override(
+    small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path
+) -> None:
+    service = M3ProjectService.import_media(
+        small_mp4,
+        project_path=tmp_path / "color-project.m3.sqlite3",
+        cache_root=tmp_path / "color-cache",
+        toolchain=Toolchain.from_paths(ffmpeg_path, ffprobe_path),
+        color_override="sdr_rec709",
+    )
+    assert service.snapshot.color_override == "sdr_rec709"
+    service.close()
+
+    reopened = M3ProjectService.open_project(tmp_path / "color-project.m3.sqlite3")
+    try:
+        assert reopened.snapshot.color_override == "sdr_rec709"
+    finally:
+        reopened.close()
+
+
 def test_preview_frame_uses_exact_display_pts(
     small_mp4: Path,
     ffmpeg_path: str,
@@ -128,6 +148,7 @@ def test_preview_frame_kills_ffmpeg_when_cancelled(
 
     class SlowProcess:
         def __init__(self, *_args, **_kwargs) -> None:
+            self.kwargs = _kwargs
             self.started = threading.Event()
             self.finished = threading.Event()
             self.killed = False
@@ -183,6 +204,7 @@ def test_preview_frame_kills_ffmpeg_when_cancelled(
     while process is None and time.monotonic() < deadline:
         time.sleep(0.01)
     assert process is not None
+    assert process.kwargs["stdin"] is subprocess.DEVNULL
     token.cancel()
     worker.join(timeout=2)
     assert not worker.is_alive()
@@ -265,6 +287,36 @@ def test_merge_audio_conflict_requires_choice_and_audio_settings_are_independent
         service.merge_segments(left.clip_id, right.clip_id, audio_enabled=False)
         assert len(service.snapshot.segments) == 1
         assert service.snapshot.segments[0].audio_enabled is False
+    finally:
+        service.close()
+
+
+def test_merge_many_selected_adjacent_segments_removes_internal_cuts_and_undoes(
+    small_mp4: Path, ffmpeg_path: str, ffprobe_path: str, tmp_path: Path
+) -> None:
+    service = _service(small_mp4, ffmpeg_path, ffprobe_path, tmp_path)
+    try:
+        service.add_cut(5, needs_review=False)
+        service.add_cut(12, needs_review=False)
+        service.add_cut(18, needs_review=False)
+        segments = sorted(service.snapshot.segments, key=lambda item: item.start_index)
+        selected = [item.clip_id for item in segments[:3]]
+        surviving_id = selected[0]
+
+        service.merge_segments_many(selected, audio_enabled=True)
+        assert [(item.start_index, item.end_index) for item in service.snapshot.segments] == [
+            (0, 18),
+            (18, service.snapshot.frame_count),
+        ]
+        assert [cut.boundary_index for cut in service.snapshot.cuts] == [18]
+        assert service.snapshot.segments[0].clip_id == surviving_id
+
+        service.undo()
+        assert [cut.boundary_index for cut in service.snapshot.cuts] == [5, 12, 18]
+        assert len(service.snapshot.segments) == 4
+        service.redo()
+        assert [cut.boundary_index for cut in service.snapshot.cuts] == [18]
+        assert len(service.snapshot.segments) == 2
     finally:
         service.close()
 

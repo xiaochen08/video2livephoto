@@ -113,6 +113,7 @@ def _read_packet_frames(
     process = subprocess.Popen(
         args,
         shell=False,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -385,6 +386,7 @@ def build_frame_index(
     process = subprocess.Popen(
         args,
         shell=False,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

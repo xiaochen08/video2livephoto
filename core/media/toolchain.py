@@ -13,6 +13,9 @@ from typing import Sequence
 from core.protocol.media import MediaError
 
 
+GPU_ENCODER_PRIORITY: tuple[str, ...] = ("h264_nvenc", "h264_qsv", "h264_amf")
+
+
 def _creation_flags() -> int:
     return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
@@ -103,6 +106,7 @@ class Toolchain:
             [executable, "-version"],
             shell=False,
             check=False,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -124,6 +128,59 @@ class Toolchain:
                 },
             )
         return result.stdout.splitlines()[0] if result.stdout else ""
+
+
+def probe_gpu_encoder(
+    toolchain: Toolchain, *, timeout_seconds: float = 8.0
+) -> tuple[str | None, str]:
+    """Run a tiny real encode to verify a hardware encoder can initialize.
+
+    Listing an encoder in ``ffmpeg -encoders`` is not enough: FFmpeg builds can
+    ship NVENC/QSV/AMF support while the local driver or device is unavailable.
+    The probe uses a generated 256x144 frame and the null muxer, so it does not
+    read user media or leave a temporary file behind.
+    """
+
+    null_target = "NUL" if os.name == "nt" else "-"
+    for encoder in GPU_ENCODER_PRIORITY:
+        args = [
+            toolchain.ffmpeg.path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=256x144:r=1,format=yuv420p",
+            "-frames:v",
+            "1",
+            "-an",
+            "-c:v",
+            encoder,
+            "-pix_fmt",
+            "yuv420p",
+            "-f",
+            "null",
+            null_target,
+        ]
+        try:
+            result = subprocess.run(
+                args,
+                shell=False,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds,
+                creationflags=_creation_flags(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            return encoder, f"已通过 {encoder} 实机编码自检。"
+    return None, "未通过可用 GPU 编码器自检，将使用 CPU 回退路径。"
 
 
 def _inspect_tool(path: Path, label: str, expected_sha256: str | None) -> ToolInfo:
@@ -151,6 +208,7 @@ def _inspect_tool(path: Path, label: str, expected_sha256: str | None) -> ToolIn
         [str(resolved), "-version"],
         shell=False,
         check=False,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         encoding="utf-8",

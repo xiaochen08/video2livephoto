@@ -7,12 +7,14 @@ import subprocess
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field, replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Iterable, Sequence
 
 from core.media.errors import MediaError
+from core.media.color import color_override_metadata
 from core.media.process import CancellationToken, kill_process
 from core.media.probe import probe_media
 from core.media.source_identity import (
@@ -68,10 +70,17 @@ def _run_process(
     *,
     token: CancellationToken,
     timeout_seconds: float,
+    progress_callback: Callable[[int], None] | None = None,
+    startup_timeout_seconds: float | None = None,
+    progress_timeout_seconds: float | None = None,
 ) -> tuple[int, str, str]:
     process = subprocess.Popen(
         list(args),
         shell=False,
+        # The desktop service itself is a JSONL process.  Never let FFmpeg
+        # inherit that live stdin pipe: it can consume IPC bytes or wait on
+        # the pipe instead of starting the encode.
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -79,20 +88,50 @@ def _run_process(
         errors="replace",
         creationflags=process_creation_flags(),
     )
-    result: dict[str, str] = {}
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
 
-    def _communicate() -> None:
-        stdout, stderr = process.communicate()
-        result["stdout"] = stdout
-        result["stderr"] = stderr
+    progress_seen = False
+    last_progress_at = time.monotonic()
 
-    reader = threading.Thread(target=_communicate, daemon=True)
-    reader.start()
+    def _report_progress(frame: int) -> None:
+        nonlocal progress_seen, last_progress_at
+        progress_seen = True
+        last_progress_at = time.monotonic()
+        if progress_callback is not None:
+            progress_callback(frame)
+
+    def _read_stdout() -> None:
+        if process.stdout is None:
+            return
+        for line in process.stdout:
+            stdout_parts.append(line)
+            if progress_callback is None:
+                continue
+            key, separator, raw_value = line.strip().partition("=")
+            if key != "frame" or not separator:
+                continue
+            try:
+                _report_progress(max(0, int(raw_value)))
+            except (TypeError, ValueError):
+                continue
+
+    def _read_stderr() -> None:
+        if process.stderr is None:
+            return
+        for line in process.stderr:
+            stderr_parts.append(line)
+
+    stdout_reader = threading.Thread(target=_read_stdout, daemon=True)
+    stderr_reader = threading.Thread(target=_read_stderr, daemon=True)
+    stdout_reader.start()
+    stderr_reader.start()
     started = time.monotonic()
-    while reader.is_alive():
+    while process.poll() is None:
         if token.cancelled:
             kill_process(process)
-            reader.join(timeout=2)
+            stdout_reader.join(timeout=2)
+            stderr_reader.join(timeout=2)
             raise MediaError(
                 code="CANCELLED",
                 stage="encode",
@@ -103,7 +142,8 @@ def _run_process(
             )
         if time.monotonic() - started > timeout_seconds:
             kill_process(process)
-            reader.join(timeout=2)
+            stdout_reader.join(timeout=2)
+            stderr_reader.join(timeout=2)
             raise MediaError(
                 code="ENCODE_TIMEOUT",
                 stage="encode",
@@ -113,9 +153,37 @@ def _run_process(
                 message="视频分段编码超时",
                 diagnostics={"timeout_seconds": timeout_seconds},
             )
+        elapsed_since_progress = time.monotonic() - last_progress_at
+        if startup_timeout_seconds is not None and not progress_seen and elapsed_since_progress > startup_timeout_seconds:
+            kill_process(process)
+            stdout_reader.join(timeout=2)
+            stderr_reader.join(timeout=2)
+            raise MediaError(
+                code="ENCODE_STARTUP_TIMEOUT",
+                stage="encode",
+                path=None,
+                stream_index=None,
+                retryable=True,
+                message="编码器启动后没有产生帧进度",
+                diagnostics={"timeout_seconds": startup_timeout_seconds},
+            )
+        if progress_timeout_seconds is not None and progress_seen and elapsed_since_progress > progress_timeout_seconds:
+            kill_process(process)
+            stdout_reader.join(timeout=2)
+            stderr_reader.join(timeout=2)
+            raise MediaError(
+                code="ENCODE_STALLED",
+                stage="encode",
+                path=None,
+                stream_index=None,
+                retryable=True,
+                message="编码器长时间没有新的帧进度",
+                diagnostics={"timeout_seconds": progress_timeout_seconds},
+            )
         time.sleep(0.05)
-    reader.join(timeout=1)
-    return process.returncode or 0, result.get("stdout", ""), result.get("stderr", "")
+    stdout_reader.join(timeout=1)
+    stderr_reader.join(timeout=1)
+    return process.wait(), "".join(stdout_parts), "".join(stderr_parts)
 
 
 def _validate_output(
@@ -246,8 +314,25 @@ def _validate_output(
     }
 
 
-def _color_filter(probe, color_mode: str) -> tuple[str | None, str]:
+def _color_filter(
+    probe,
+    color_mode: str,
+    source_color_override: str | None = None,
+) -> tuple[str | None, str, dict[str, str]]:
     color = probe.video_stream.color
+    override = color_override_metadata(source_color_override)
+    if source_color_override is not None and override is None:
+        raise MediaError(
+            code="INVALID_COLOR_OVERRIDE",
+            stage="encode",
+            path=None,
+            stream_index=probe.selected_video_stream,
+            retryable=False,
+            message="导入时选择的色彩类型不受支持。",
+            diagnostics={"color_override": source_color_override},
+        )
+    if override is not None:
+        color = replace(color, **override)
     unknown = color.transfer in {None, "", "unknown"} or color.primaries in {
         None,
         "",
@@ -263,6 +348,14 @@ def _color_filter(probe, color_mode: str) -> tuple[str | None, str]:
             message="未知的色彩输出模式",
             diagnostics={"color_mode": color_mode},
         )
+    output_metadata: dict[str, str] = {}
+    if override is not None:
+        output_metadata = {
+            "color_range": str(override["range"]),
+            "colorspace": str(override["space"]),
+            "color_primaries": str(override["primaries"]),
+            "color_trc": str(override["transfer"]),
+        }
     if unknown and color_mode != "warn":
         raise MediaError(
             code="UNKNOWN_COLOR_METADATA",
@@ -274,9 +367,9 @@ def _color_filter(probe, color_mode: str) -> tuple[str | None, str]:
             diagnostics={"transfer": color.transfer, "primaries": color.primaries},
         )
     if color_mode == "hdr":
-        return None, "preserve-hdr"
+        return None, "preserve-hdr", output_metadata
     if color_mode == "warn":
-        return None, "unknown-preserved-with-warning" if unknown else "preserved"
+        return None, "unknown-preserved-with-warning" if unknown else "preserved", output_metadata
     if color.hdr_present or color_mode == "sdr":
         # Real tone mapping plus matrix conversion.  If the frozen ffmpeg build
         # lacks zscale/tonemap, the command fails and the caller reports it.
@@ -287,9 +380,26 @@ def _color_filter(probe, color_mode: str) -> tuple[str | None, str]:
                 "zscale=primaries=bt709:transfer=bt709:matrix=bt709:range=tv,"
                 "format=yuv420p",
                 "hdr-to-rec709-sdr",
+                {"color_range": "tv", "colorspace": "bt709", "color_primaries": "bt709", "color_trc": "bt709"},
             )
-        return None, "sdr-preserved"
-    return None, "sdr-preserved"
+        return None, "sdr-assumed-rec709" if source_color_override == "sdr_rec709" else "sdr-preserved", output_metadata
+    return None, "sdr-preserved", output_metadata
+
+
+def _h264_color_bitstream_filter(metadata: dict[str, str]) -> str | None:
+    primaries = {"bt709": "1", "bt2020": "9"}.get(metadata.get("color_primaries", ""))
+    transfer = {"bt709": "1", "smpte2084": "16", "arib-std-b67": "18"}.get(metadata.get("color_trc", ""))
+    matrix = {"bt709": "1", "bt2020nc": "9"}.get(metadata.get("colorspace", ""))
+    range_flag = {"tv": "0", "pc": "1"}.get(metadata.get("color_range", ""))
+    if None in {primaries, transfer, matrix, range_flag}:
+        return None
+    return (
+        "h264_metadata="
+        f"video_full_range_flag={range_flag}:"
+        f"colour_primaries={primaries}:"
+        f"transfer_characteristics={transfer}:"
+        f"matrix_coefficients={matrix}"
+    )
 
 
 def _validate_frame_range(
@@ -350,6 +460,8 @@ def encode_segment(
     token: CancellationToken | None = None,
     timeout_seconds: float = 3600.0,
     video_stream_index: int | None = None,
+    source_color_override: str | None = None,
+    progress_callback: Callable[[float], None] | None = None,
 ) -> SegmentEncodeResult:
     source = Path(source_path)
     destination = Path(output_path)
@@ -397,7 +509,9 @@ def encode_segment(
     # source is a valid input and must not fail merely because no audio stream
     # exists to map.
     effective_audio = audio_enabled and bool(probe.audio_streams)
-    filter_graph, color_transform = _color_filter(probe, color_mode)
+    filter_graph, color_transform, color_metadata = _color_filter(
+        probe, color_mode, source_color_override
+    )
     start_seconds = _fraction_seconds(first_pts, time_base)
     end_seconds = _fraction_seconds(end_pts, time_base)
     if start_seconds is None or end_seconds is None:
@@ -417,6 +531,43 @@ def encode_segment(
     gpu_fallback = False
     validation: dict[str, object] = {}
     diagnostics: list[str] = []
+    reported_progress = 0.0
+
+    def report_frame_progress(done: int) -> None:
+        nonlocal reported_progress
+        if progress_callback is None:
+            return
+        ratio = min(max(done / frame_count, 0.0), 1.0)
+        if ratio <= reported_progress:
+            return
+        reported_progress = ratio
+        progress_callback(ratio)
+
+    seek_frame = next(
+        (
+            candidate
+            for candidate in reversed(
+                tuple(
+                    candidate
+                    for candidate in frame_list
+                    if candidate.display_index <= first.display_index
+                )
+            )
+            if candidate.keyframe
+            and (candidate.pts is not None or candidate.best_effort_pts is not None)
+        ),
+        None,
+    )
+    seek_pts = (
+        seek_frame.best_effort_pts
+        if seek_frame is not None and seek_frame.best_effort_pts is not None
+        else seek_frame.pts if seek_frame is not None else None
+    )
+    seek_seconds = (
+        _fraction_seconds(seek_pts, seek_frame.time_base)
+        if seek_frame is not None and seek_pts is not None
+        else None
+    )
     try:
         candidate_encoders = list(gpu_encoders) if prefer_gpu else []
         candidate_encoders.append(cpu_encoder)
@@ -430,31 +581,55 @@ def encode_segment(
                 "-hide_banner",
                 "-loglevel",
                 "error",
+                "-nostdin",
                 "-y",
                 "-copyts",
-                "-i",
-                str(source),
-                "-map",
-                f"0:{stream_index}",
-                "-map",
-                "0:a?" if effective_audio else "-0:a?",
-                "-vf",
-                (
-                    f"select='gte(pts\\,{first_pts})*lt(pts\\,{end_pts})',"
-                    "setpts=PTS-STARTPTS" + (f",{filter_graph}" if filter_graph else "")
-                ),
-                "-fps_mode",
-                "vfr",
-                "-c:v",
-                encoder,
-                "-pix_fmt",
-                "yuv420p",
-                "-c:a",
-                "aac",
-                "-movflags",
-                "+faststart",
-                str(partial),
             ]
+            if seek_seconds is not None and seek_seconds > 0:
+                args.extend(["-ss", _decimal_seconds(seek_seconds)])
+            args.extend(
+                [
+                    "-i",
+                    str(source),
+                    "-map",
+                    f"0:{stream_index}",
+                    "-map",
+                    "0:a?" if effective_audio else "-0:a?",
+                    "-vf",
+                    (
+                        f"select='gte(pts\\,{first_pts})*lt(pts\\,{end_pts})',"
+                        "setpts=PTS-STARTPTS"
+                        + (f",{filter_graph}" if filter_graph else "")
+                    ),
+                    "-fps_mode",
+                    "vfr",
+                    "-c:v",
+                    encoder,
+                ]
+            )
+            if encoder == "h264_nvenc":
+                # p2 keeps the source-quality path while avoiding the much
+                # slower default NVENC preset on long 4K segments.
+                args.extend(["-preset", "p2"])
+            args.extend(
+                [
+                    "-pix_fmt",
+                    "yuv420p",
+                    *sum(([f"-{key}", value] for key, value in color_metadata.items()), []),
+                    "-c:a",
+                    "aac",
+                    "-movflags",
+                    "+faststart",
+                    "-progress",
+                    "pipe:1",
+                    "-nostats",
+                    str(partial),
+                ]
+            )
+            color_bitstream_filter = _h264_color_bitstream_filter(color_metadata)
+            if color_bitstream_filter:
+                output_index = args.index(str(partial))
+                args[output_index:output_index] = ["-bsf:v", color_bitstream_filter]
             if effective_audio:
                 # Insert the audio trim immediately before the codec options;
                 # this avoids creating an unconnected filter when the caller
@@ -465,9 +640,22 @@ def encode_segment(
                     f"atrim=start={_decimal_seconds(start_seconds)}:"
                     f"end={_decimal_seconds(end_seconds)},asetpts=PTS-STARTPTS",
                 ]
-            returncode, _stdout, stderr = _run_process(
-                args, token=token, timeout_seconds=timeout_seconds
-            )
+            try:
+                returncode, _stdout, stderr = _run_process(
+                    args,
+                    token=token,
+                    timeout_seconds=timeout_seconds,
+                    progress_callback=report_frame_progress,
+                    startup_timeout_seconds=30.0 if is_gpu else 120.0,
+                    progress_timeout_seconds=90.0,
+                )
+            except MediaError as exc:
+                if not is_gpu or exc.code == "CANCELLED":
+                    raise
+                diagnostics.append(f"encoder {encoder} stalled: {exc}")
+                partial.unlink(missing_ok=True)
+                gpu_fallback = True
+                continue
             if returncode != 0 or not partial.exists() or partial.stat().st_size == 0:
                 diagnostics.append(f"encoder {encoder} failed: {stderr[-1000:]}")
                 partial.unlink(missing_ok=True)
@@ -513,6 +701,8 @@ def encode_segment(
                 )
             selected_encoder = encoder
             os.replace(partial, destination)
+            if progress_callback is not None:
+                progress_callback(1.0)
             break
         if selected_encoder is None:
             raise MediaError(

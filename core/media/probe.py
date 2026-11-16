@@ -157,6 +157,7 @@ def _run_probe(
     process = subprocess.Popen(
         args,
         shell=False,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

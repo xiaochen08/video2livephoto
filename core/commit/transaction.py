@@ -73,7 +73,7 @@ def _is_disk_full(exc: OSError) -> bool:
 
 
 class CommitTransaction:
-    """Commit a complete MP4/JPG/MOV set with a recoverable journal.
+    """Commit a complete MP4/LIVP set with a recoverable journal.
 
     Outputs are written to a private temporary directory by the encoder.  This
     class verifies every file and the source identity before moving anything;

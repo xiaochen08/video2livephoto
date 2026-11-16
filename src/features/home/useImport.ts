@@ -1,6 +1,7 @@
 import { computed } from 'vue'
 import type { FileRef } from '@/adapters/contract'
 import { useApp } from '@/app/context'
+import type { ImportColorSelection } from '@/domain/types'
 
 /** probe → (optional) stream choice → analysis. Shared by home, drop and multi-file dialog. */
 export function useImport() {
@@ -29,7 +30,23 @@ export function useImport() {
       if (chosen === null) return
       streamIndex = chosen
     }
-    home.startAnalysis(probe, streamIndex)
+    const stream = probe.media.video_streams.find((item) => item.stream_index === streamIndex)
+    const colorUnknown = !!stream && (stream.color.transfer === 'unknown' || stream.color.primaries === 'unknown')
+    let colorOverride: ImportColorSelection | null = null
+    if (colorUnknown) {
+      colorOverride = await new Promise<ImportColorSelection | null>((resolve) => {
+        ui.dialogs.colorSelect.value = {
+          probe,
+          streamIndex,
+          resolve: (choice) => {
+            ui.dialogs.colorSelect.value = null
+            resolve(choice)
+          },
+        }
+      })
+      if (colorOverride === null) return
+    }
+    home.startAnalysis(probe, streamIndex, colorOverride)
   }
 
   return { importRef, analysisBusy }

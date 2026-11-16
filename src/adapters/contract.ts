@@ -21,6 +21,7 @@ import type {
   ClipId,
   ExportSettings,
   HistoryState,
+  ImportColorSelection,
   JobId,
   MediaInfo,
   Project,
@@ -135,7 +136,7 @@ export interface PreflightResult {
   free_space_bytes: string | null
   estimated_bytes: string | null
   existing_outputs: { count: number; externally_modified: number; locked: number }
-  sample_names: { mp4: string; jpg: string; mov: string }
+  sample_names: { mp4: string; livp: string }
 }
 
 export interface CreateBatchRequest {
@@ -226,7 +227,7 @@ export interface V2LPAdapter {
 
   analysis: {
     start(
-      params: { file: FileRef; video_stream_index: number; project_name: string; request_id: RequestId },
+      params: { file: FileRef; video_stream_index: number; project_name: string; request_id: RequestId; color_override?: ImportColorSelection | null },
       onEvent: (e: AnalysisEvent) => void,
     ): AnalysisHandle
     reanalyze(project_id: ProjectId, request_id: RequestId): Promise<{ analysis_version: number; preserved: string }>
@@ -270,7 +271,7 @@ export interface V2LPAdapter {
   }
 
   files: {
-    openArtifact(job_id: JobId, kind: 'mp4' | 'jpg' | 'mov'): Promise<void>
+    openArtifact(job_id: JobId, kind: 'mp4' | 'livp' | 'jpg' | 'mov'): Promise<void>
     revealOutput(project_id: ProjectId, job_id?: JobId): Promise<void>
     readReport(job_id: JobId): Promise<string>
     pickOutputDir(): Promise<string | null>

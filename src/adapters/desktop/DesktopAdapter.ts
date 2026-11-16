@@ -71,7 +71,7 @@ function normalizeProject(raw: any): Project {
   }))
   const clips = (raw?.segments || []).map((segment: any) => ({
     clip_id: String(segment.clip_id), start_frame: Number(segment.start_index), end_frame: Number(segment.end_index), start_pts: null, end_pts: null,
-    display_index: Number(segment.output_number || 0), name: null, name_origin: 'default', export_selected: segment.selected_for_export !== false,
+    display_index: Number(segment.output_number || 0), name: segment.name ?? null, name_origin: segment.name ? 'user' : 'default', export_selected: segment.selected_for_export !== false,
     audio: segment.audio_enabled === false ? 'muted' : 'source', cover: { frame: Number(segment.cover_frame_index ?? segment.start_index), origin: segment.cover_frame_index == null ? 'auto' : 'user', status: 'valid' },
   }))
   const durationUs = Math.round(Number(container.duration_seconds || 0) * 1_000_000)
@@ -117,6 +117,8 @@ type PreviewEntry = {
   started: boolean
   settled: boolean
   cancelSent: boolean
+  retryCount: number
+  retryTimer?: ReturnType<typeof setTimeout>
 }
 
 export class DesktopAdapter implements V2LPAdapter {
@@ -182,6 +184,8 @@ export class DesktopAdapter implements V2LPAdapter {
   private settlePreview(entry: PreviewEntry, error: unknown, result?: FrameResult): void {
     if (entry.settled) return
     entry.settled = true
+    if (entry.retryTimer) clearTimeout(entry.retryTimer)
+    entry.retryTimer = undefined
     if (this.previewEntries.get(entry.key) === entry) this.previewEntries.delete(entry.key)
     for (const consumer of entry.consumers) {
       if (consumer.signal && consumer.abortHandler) consumer.signal.removeEventListener('abort', consumer.abortHandler)
@@ -204,6 +208,14 @@ export class DesktopAdapter implements V2LPAdapter {
       void this.call<any>('preview.getFrame', { ...entry.request, preview_request_id: entry.requestId }, undefined, 60_000)
         .then((response) => this.settlePreview(entry, null, (response.frame ?? response) as FrameResult))
         .catch((error: unknown) => {
+          if (error instanceof AdapterError && error.error.code === 'PREVIEW_BUSY') {
+            if (entry.retryCount >= 2) {
+              this.settlePreview(entry, error)
+              return
+            }
+            this.retryPreviewAfterExport(entry)
+            return
+          }
           if (error instanceof AdapterError && error.error.code === 'BACKEND_TIMEOUT') this.cancelPreviewEntry(entry)
           this.settlePreview(entry, error)
         })
@@ -212,6 +224,19 @@ export class DesktopAdapter implements V2LPAdapter {
           this.pumpPreviews()
         })
     }
+  }
+
+  private retryPreviewAfterExport(entry: PreviewEntry): void {
+    entry.started = false
+    entry.cancelSent = false
+    entry.retryCount += 1
+    if (entry.settled || entry.consumers.size === 0 || entry.retryTimer) return
+    entry.retryTimer = setTimeout(() => {
+      entry.retryTimer = undefined
+      if (entry.settled || entry.consumers.size === 0) return
+      this.previewQueue.push(entry)
+      this.pumpPreviews()
+    }, 1_000)
   }
 
   private requestPreview(req: FrameRequest, signal?: AbortSignal): Promise<FrameResult> {
@@ -227,6 +252,7 @@ export class DesktopAdapter implements V2LPAdapter {
         started: false,
         settled: false,
         cancelSent: false,
+        retryCount: 0,
       }
       this.previewEntries.set(key, entry)
       this.previewQueue.push(entry)
@@ -240,6 +266,10 @@ export class DesktopAdapter implements V2LPAdapter {
         target.consumers.delete(consumer)
         reject(abortError())
         if (target.consumers.size !== 0) return
+        if (target.retryTimer) {
+          clearTimeout(target.retryTimer)
+          target.retryTimer = undefined
+        }
         if (!target.started) {
           target.settled = true
           if (this.previewEntries.get(target.key) === target) this.previewEntries.delete(target.key)
@@ -265,7 +295,7 @@ export class DesktopAdapter implements V2LPAdapter {
       const e = error as AdapterError
       if (!(e instanceof AdapterError) || !['IPC_METHOD_UNKNOWN', 'IPC_ERROR'].includes(e.error.code)) throw error
       const ping = await this.call<any>('ping', {}, undefined, 8_000)
-      return { mode: 'desktop', app_version: '1.0.0-candidate', backend_version: String(ping.service || 'm3-python'), capabilities: { backend_version: String(ping.service || 'm3-python'), frame_accurate_preview: true, gpu: { available: false, verified_encoder: null, note: '未验证 GPU。' }, hdr_output: { supported: false, note: '当前链路未验证 HDR 输出。' }, declick_audio: false, max_parallel_jobs: 1, livephoto_hint: { short_below_ms: 1000, long_above_ms: 15000 } } }
+      return { mode: 'desktop', app_version: '1.0.0-candidate', backend_version: String(ping.service || 'm3-python'), capabilities: { backend_version: String(ping.service || 'm3-python'), frame_accurate_preview: true, gpu: { available: false, verified_encoder: null, note: '未验证 GPU。' }, hdr_output: { supported: false, note: '当前链路未验证 HDR 输出。' }, declick_audio: false, max_parallel_jobs: 1, livephoto_hint: { short_below_ms: 1000, long_above_ms: 3000 } } }
     }
   }
 
@@ -294,7 +324,7 @@ export class DesktopAdapter implements V2LPAdapter {
       let analysisId = ''
       const off = this.bridge?.on?.('v2lp:analysis:event', (payload) => { const event = payload as AnalysisEvent; const matches = event.analysis_id === analysisId || (!analysisId && event.request_id === params.request_id); if (event.analysis_id && matches) onEvent(event) })
       const filePath = params.file.kind === 'desktop' ? params.file.display_path : ''
-      const started = this.call<any>('analysis.start', { source_path: filePath, project_name: params.project_name, video_stream_index: params.video_stream_index, request_id: params.request_id })
+      const started = this.call<any>('analysis.start', { source_path: filePath, project_name: params.project_name, video_stream_index: params.video_stream_index, color_override: params.color_override ?? null, request_id: params.request_id })
       const done = started.then((result) => {
         analysisId = String(result.analysis_id || '')
         if (!analysisId) throw asAppError({ code: 'ANALYSIS_ID_MISSING', message: '后端未返回分析任务 ID。' }, 'ANALYSIS_ID_MISSING')

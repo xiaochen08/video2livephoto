@@ -31,6 +31,9 @@ export type PtsString = string
 
 export type ColorTransfer = 'bt709' | 'pq' | 'hlg' | 'log' | 'unknown'
 
+/** User-selected interpretation used when the source does not carry enough color metadata. */
+export type ImportColorSelection = 'sdr_rec709' | 'hdr_pq' | 'hdr_hlg'
+
 export interface ColorInfo {
   transfer: ColorTransfer
   primaries: 'bt709' | 'bt2020' | 'unknown'
@@ -230,7 +233,7 @@ export interface SnapshotClip {
   audio: AudioMode
   cover_frame: number
   file_stem: string
-  /** pairs JPG + MOV as a Live Photo (content identifier) */
+  /** pairing UUID written into the resources inside the .livp delivery file */
   pair_id: string
 }
 
@@ -270,7 +273,7 @@ export interface Attempt {
   error: AppError | null
 }
 
-export type ArtifactKind = 'mp4' | 'jpg' | 'mov'
+export type ArtifactKind = 'mp4' | 'livp' | 'jpg' | 'mov'
 
 export interface Artifact {
   kind: ArtifactKind

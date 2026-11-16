@@ -44,8 +44,7 @@ const clone = <T>(v: T): T => structuredClone(v)
 export function artifactsFor(stem: string): Artifact[] {
   return [
     { kind: 'mp4', file_name: `${stem}.mp4`, rel_dir: '视频片段', status: 'pending', size_bytes: null },
-    { kind: 'jpg', file_name: `${stem}.jpg`, rel_dir: 'LivePhoto', status: 'pending', size_bytes: null },
-    { kind: 'mov', file_name: `${stem}.mov`, rel_dir: 'LivePhoto', status: 'pending', size_bytes: null },
+    { kind: 'livp', file_name: `${stem}.livp`, rel_dir: 'LivePhoto', status: 'pending', size_bytes: null },
   ]
 }
 
@@ -330,7 +329,7 @@ export class ExportSimulator {
         sj.ticksInStage = 0
         this.patchJob(sb, sj, {
           stage: 'verifying',
-          progress: { kind: 'artifacts', done: 0, total: 3 },
+          progress: { kind: 'artifacts', done: 0, total: 2 },
           artifacts: job.artifacts.map((a) => ({ ...a, status: 'writing' })),
         })
       } else {
@@ -340,10 +339,10 @@ export class ExportSimulator {
     }
     if (job.stage === 'verifying') {
       if (sj.ticksInStage % 2 !== 0) return
-      const done = Math.min(3, (job.progress?.kind === 'artifacts' ? job.progress.done : 0) + 1)
-      const artifacts = job.artifacts.map((a, i) => (i < done ? { ...a, status: 'verified' as const, size_bytes: String(a.kind === 'jpg' ? 820_000 + i : 6_400_000 + sj.frames * 41_000) } : a))
-      if (done < 3) {
-        this.patchJob(sb, sj, { progress: { kind: 'artifacts', done, total: 3 }, artifacts })
+      const done = Math.min(2, (job.progress?.kind === 'artifacts' ? job.progress.done : 0) + 1)
+      const artifacts = job.artifacts.map((a, i) => (i < done ? { ...a, status: 'verified' as const, size_bytes: String(a.kind === 'livp' ? 6_400_000 + sj.frames * 41_000 : 8_200_000 + i * 100_000) } : a))
+      if (done < 2) {
+        this.patchJob(sb, sj, { progress: { kind: 'artifacts', done, total: 2 }, artifacts })
         return
       }
       if (job.cancel_requested) {

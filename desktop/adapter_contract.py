@@ -11,6 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from core.media.color import color_override_metadata
+
 from .models import M3ProjectError, ProjectSnapshot
 
 
@@ -128,6 +130,12 @@ def media_info(snapshot: ProjectSnapshot, frame_at=None) -> dict[str, Any]:
             if rotation not in {0, 90, 180, 270}:
                 rotation = 0
             stream_index = int(stream.get("index", -1))
+            color = dict(stream.get("color") or {})
+            color_override = getattr(snapshot, "color_override", None)
+            if stream_index == selected and color_override:
+                override = color_override_metadata(color_override)
+                if override is not None:
+                    color.update(override)
             videos.append(
                 {
                     "stream_index": stream_index,
@@ -141,7 +149,7 @@ def media_info(snapshot: ProjectSnapshot, frame_at=None) -> dict[str, Any]:
                     "frame_count": snapshot.frame_count if stream_index == selected else 0,
                     "time_base": time_base,
                     "duration_us": int(round(float(stream.get("duration_seconds") or duration_seconds or 0) * 1_000_000)),
-                    "color": _color(stream.get("color") or {}),
+                    "color": _color(color),
                     "is_default": bool((stream.get("disposition") or {}).get("default", 0)),
                     "title": (stream.get("tags") or {}).get("title"),
                 }
@@ -231,8 +239,8 @@ def _timeline(snapshot: ProjectSnapshot, frame_at) -> dict[str, Any]:
                 "start_pts": start_pts,
                 "end_pts": end_pts,
                 "display_index": int(segment.output_number),
-                "name": None,
-                "name_origin": "default",
+                "name": segment.name,
+                "name_origin": "user" if segment.name else "default",
                 "export_selected": bool(segment.selected_for_export),
                 "audio": "source" if segment.audio_enabled else "muted",
                 "cover": {

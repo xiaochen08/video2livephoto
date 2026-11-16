@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 import uuid as uuidlib
+import zipfile
 from dataclasses import asdict, dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -31,12 +32,15 @@ class LivePhotoManifest:
     clip_id: str
     pairing_uuid: str
     still_image_time_seconds: float
-    jpg_path: str
-    mov_path: str
+    jpg_path: str | None
+    mov_path: str | None
+    livp_path: str
     jpg_sha256: str
     mov_sha256: str
+    livp_sha256: str
     jpg_bytes: int
     mov_bytes: int
+    livp_bytes: int
     duration_seconds: float | None
     video_frame_count: int | None
     validation: dict[str, Any] = field(default_factory=dict)
@@ -181,6 +185,48 @@ def _ffprobe_json(
             stream_index=None,
             retryable=False,
             message="MOV 的 ffprobe 结果无效",
+        ) from exc
+
+
+def _ffprobe_container_json(
+    path: Path, toolchain: Toolchain, token: CancellationToken | None = None
+) -> dict[str, Any]:
+    """Read container tags and every stream without decoding media frames."""
+    code, stdout, stderr = _run(
+        [
+            toolchain.ffprobe.path,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            "-show_entries",
+            "format=format_name:format_tags:stream=index,codec_type,codec_name,codec_tag_string",
+            str(path),
+        ],
+        token=token,
+    )
+    if code != 0:
+        raise MediaError(
+            code="LIVEPHOTO_INVALID",
+            stage="livephoto",
+            path=str(path),
+            stream_index=None,
+            retryable=False,
+            message="MOV 容器结构无法被 ffprobe 读取",
+            diagnostics={"returncode": code, "stderr": stderr[-4000:]},
+        )
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise MediaError(
+            code="LIVEPHOTO_INVALID",
+            stage="livephoto",
+            path=str(path),
+            stream_index=None,
+            retryable=False,
+            message="MOV 容器结构的 ffprobe 结果无效",
         ) from exc
 
 
@@ -611,9 +657,15 @@ def _validate_timed_metadata_track(path: Path, still_time: float) -> dict[str, A
         handler = next((item for item in _walk_atoms(moov, offset + header_size, offset + size) if item[2] == "hdlr"), None)
         if handler is not None and moov[handler[0] + 16:handler[0] + 20] == b"meta":
             stsd = next((item for item in _walk_atoms(moov, offset + header_size, offset + size) if item[2] == "stsd"), None)
-            if stsd is not None and moov[stsd[0] + 20:stsd[0] + 24] == b"mebx":
-                metadata_trak = (offset, size, header_size, stsd)
-                break
+            if stsd is not None:
+                stsd_bytes = moov[stsd[0]:stsd[0] + stsd[1]]
+                # A generated/wallpaper-compatible MOV may carry several
+                # mebx tracks. Select the one whose sample description names
+                # still-image-time instead of assuming the first metadata
+                # track is the key-frame marker.
+                if b"mebx" in stsd_bytes and b"still-image-time" in stsd_bytes:
+                    metadata_trak = (offset, size, header_size, stsd)
+                    break
     if metadata_trak is None:
         raise MediaError(
             code="LIVEPHOTO_TIMED_METADATA_MISSING",
@@ -669,7 +721,12 @@ def _validate_timed_metadata_track(path: Path, still_time: float) -> dict[str, A
         )
     _version, entries = _parse_edit_list(moov, elst[0], elst[1])
     expected_units = round(still_time * movie_timescale)
-    if len(entries) < 2 or entries[0] != (expected_units, -1) or entries[1] != (1, 0):
+    if (
+        len(entries) < 2
+        or entries[0] != (expected_units, -1)
+        or entries[1][1] != 0
+        or entries[1][0] <= 0
+    ):
         raise MediaError(
             code="LIVEPHOTO_TIMED_METADATA_INVALID",
             stage="livephoto",
@@ -700,6 +757,183 @@ def _validate_timed_metadata_track(path: Path, still_time: float) -> dict[str, A
         "timed_metadata_still_units": expected_units,
         "timed_metadata_edit_list": entries,
         "timed_metadata_sample_marker": -1,
+    }
+
+
+def _motion_sensor_track_summary(path: Path) -> dict[str, Any]:
+    """Summarize an optional per-frame live-photo-info metadata track."""
+    atoms = _read_top_atoms(path)
+    moovs = [item for item in atoms if item[2] == "moov"]
+    if len(moovs) != 1:
+        return {
+            "motion_sensor_track": False,
+            "motion_sensor_track_samples": 0,
+            "motion_sensor_track_sample_size": None,
+        }
+    moov_offset, moov_size, _, _ = moovs[0]
+    moov = _read_range(path, moov_offset, moov_size)
+    for offset, size, atom_type, header_size in _iter_atoms(moov, 8, len(moov)):
+        if atom_type != "trak":
+            continue
+        handler = next(
+            (
+                item
+                for item in _walk_atoms(
+                    moov, offset + header_size, offset + size
+                )
+                if item[2] == "hdlr"
+            ),
+            None,
+        )
+        if handler is None or moov[handler[0] + 16:handler[0] + 20] != b"meta":
+            continue
+        stsd = next(
+            (
+                item
+                for item in _walk_atoms(
+                    moov, offset + header_size, offset + size
+                )
+                if item[2] == "stsd"
+            ),
+            None,
+        )
+        if stsd is None:
+            continue
+        stsd_bytes = moov[stsd[0]:stsd[0] + stsd[1]]
+        if b"mebx" not in stsd_bytes or b"live-photo-info" not in stsd_bytes:
+            continue
+        stsz = next(
+            (
+                item
+                for item in _walk_atoms(
+                    moov, offset + header_size, offset + size
+                )
+                if item[2] == "stsz"
+            ),
+            None,
+        )
+        if stsz is None:
+            return {
+                "motion_sensor_track": True,
+                "motion_sensor_track_samples": 0,
+                "motion_sensor_track_sample_size": None,
+            }
+        sample_size = struct.unpack_from(">I", moov, stsz[0] + 12)[0]
+        sample_count = struct.unpack_from(">I", moov, stsz[0] + 16)[0]
+        return {
+            "motion_sensor_track": True,
+            "motion_sensor_track_samples": sample_count,
+            "motion_sensor_track_sample_size": sample_size or "variable",
+        }
+    return {
+        "motion_sensor_track": False,
+        "motion_sensor_track_samples": 0,
+        "motion_sensor_track_sample_size": None,
+    }
+
+
+def _package_livp(
+    jpg_path: Path,
+    mov_path: Path,
+    output_path: Path,
+    pairing_uuid: str,
+) -> dict[str, Any]:
+    """Package the validated resource pair as one transportable ``.livp``.
+
+    The media remains stored without ZIP compression.  Recompressing an already
+    compressed MOV/JPEG only wastes time and makes large exports less stable.
+    The two entries use the same stem so a receiving Live Photo importer can
+    recover the pair without relying on the desktop manifest.
+    """
+    stem = pairing_uuid.replace("-", "")[:8].upper()
+    entries = (
+        (f"IMB_{stem}.JPG", jpg_path),
+        (f"IMB_{stem}.MOV", mov_path),
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_path = output_path.with_name(output_path.name + ".raw")
+
+    def write_archive(path: Path, comment: bytes) -> None:
+        with zipfile.ZipFile(
+            path,
+            mode="w",
+            compression=zipfile.ZIP_STORED,
+            allowZip64=True,
+        ) as archive:
+            archive.comment = comment
+            for name, source_path in entries:
+                info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_STORED
+                info.create_system = 0
+                info.external_attr = 0
+                info.extra = b""
+                info.comment = b""
+                with source_path.open("rb") as source, archive.open(info, "w") as target:
+                    shutil.copyfileobj(source, target, length=8 * 1024 * 1024)
+
+    try:
+        # The compatible .livp comment stores the two media data offsets and
+        # sizes, followed by the ASCII marker.  Calculate those offsets from a
+        # first stored archive, then write the final archive with the comment.
+        write_archive(raw_path, b"")
+        with zipfile.ZipFile(raw_path, mode="r") as archive:
+            infos = [archive.getinfo(name) for name, _ in entries]
+            data_offsets = [
+                info.header_offset + 30 + len(info.filename.encode("utf-8")) + len(info.extra)
+                for info in infos
+            ]
+            comment = struct.pack(
+                ">HIIHII8s",
+                2,
+                data_offsets[0],
+                infos[0].compress_size,
+                3,
+                data_offsets[1],
+                infos[1].compress_size,
+                b"1000LIVP",
+            )
+        write_archive(output_path, comment)
+    finally:
+        raw_path.unlink(missing_ok=True)
+
+    try:
+        with zipfile.ZipFile(output_path, mode="r") as archive:
+            names = archive.namelist()
+            corrupt = archive.testzip()
+            infos = archive.infolist()
+            comment_hex = archive.comment.hex().upper()
+            valid = (
+                corrupt is None
+                and names == [name for name, _ in entries]
+                and all(info.compress_type == zipfile.ZIP_STORED for info in infos)
+                and archive.comment.endswith(b"1000LIVP")
+            )
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise MediaError(
+            code="LIVEPHOTO_LIVP_INVALID",
+            stage="livephoto",
+            path=str(output_path),
+            stream_index=None,
+            retryable=False,
+            message="无法验证 .livp 封装",
+            diagnostics={"error": str(exc)},
+        ) from exc
+    if not valid:
+        raise MediaError(
+            code="LIVEPHOTO_LIVP_INVALID",
+            stage="livephoto",
+            path=str(output_path),
+            stream_index=None,
+            retryable=False,
+            message=".livp 内部资源或 ZIP 结构不符合预期",
+            diagnostics={"entries": names, "corrupt_entry": corrupt},
+        )
+    return {
+        "valid": True,
+        "entry_count": len(entries),
+        "entries": [name for name, _ in entries],
+        "comment": comment_hex,
+        "compression": "stored",
     }
 
 
@@ -794,13 +1028,55 @@ def _validate_pair(
         )
     tags = (payload.get("format") or {}).get("tags") or {}
     normalized_tags = {str(key).lower(): str(value) for key, value in tags.items()}
+    container_payload = _ffprobe_container_json(mov_path, toolchain, token)
+    container_tags = (container_payload.get("format") or {}).get("tags") or {}
+    normalized_container_tags = {
+        str(key).lower(): str(value) for key, value in container_tags.items()
+    }
+    major_brand = normalized_container_tags.get("major_brand")
+    if major_brand != "qt  ":
+        raise MediaError(
+            code="LIVEPHOTO_CONTAINER_NOT_QUICKTIME",
+            stage="livephoto",
+            path=str(mov_path),
+            stream_index=None,
+            retryable=False,
+            message="Live Photo MOV 必须使用 QuickTime qt 品牌",
+            diagnostics={"major_brand": major_brand},
+        )
+    container_streams = container_payload.get("streams") or []
+    if any(str(stream.get("codec_tag_string", "")).lower() == "tmcd" for stream in container_streams):
+        raise MediaError(
+            code="LIVEPHOTO_UNSUPPORTED_TIMECODE_TRACK",
+            stage="livephoto",
+            path=str(mov_path),
+            stream_index=None,
+            retryable=False,
+            message="Live Photo MOV 不应携带源视频时间码轨",
+        )
+    video_stream = next(
+        (
+            stream
+            for stream in container_streams
+            if str(stream.get("codec_type", "")).lower() == "video"
+        ),
+        None,
+    )
+    video_codec = str((video_stream or {}).get("codec_name") or "unknown").lower()
+    # The camera-recorded motion-sensor track is separate from the required
+    # still-image-time marker.  It is needed by some wallpaper/lock-screen
+    # consumers, but it cannot be fabricated from an ordinary source video.
+    # Record its absence explicitly so a local pair check is not mistaken for
+    # a complete Apple-device compatibility proof.
+    motion_sensor = _motion_sensor_track_summary(mov_path)
+    has_motion_sensor_track = bool(motion_sensor["motion_sensor_track"])
     content_id = normalized_tags.get("com.apple.quicktime.content.identifier")
     still_tag = normalized_tags.get("com.apple.quicktime.still-image-time")
     # FFmpeg may serialize the key in a binary mdta/ilst record that ffprobe
     # presents differently.  Keep a second byte-level evidence check.
     raw_has_uuid = _contains_bytes(mov_path, pairing_uuid.encode("ascii"))
     raw_has_still_key = _contains_bytes(mov_path, b"still-image-time")
-    if content_id and content_id.upper() != pairing_uuid.upper() and not raw_has_uuid:
+    if not content_id or content_id.upper() != pairing_uuid.upper():
         raise MediaError(
             code="LIVEPHOTO_METADATA_MISMATCH",
             stage="livephoto",
@@ -850,8 +1126,21 @@ def _validate_pair(
                     frame_times.append(float(int(raw_pts) * time_base))
         except (ValueError, ZeroDivisionError):
             frame_times = []
+    frame_steps = [
+        right - left
+        for left, right in zip(frame_times, frame_times[1:])
+        if right > left
+    ]
+    # A 59.94 fps stream cannot represent 0.500000 exactly: its nearest
+    # presentation timestamp may be 0.500500. Accept the nearest legal frame
+    # within half a frame while still rejecting a marker that points between
+    # unrelated frames.
+    frame_tolerance = (
+        max(1e-6, min(frame_steps) * 0.51) if frame_steps else 1e-6
+    )
     if not frame_times or not any(
-        abs(value - still_image_time_seconds) <= 1e-6 for value in frame_times
+        abs(value - still_image_time_seconds) <= frame_tolerance
+        for value in frame_times
     ):
         raise MediaError(
             code="STILL_IMAGE_TIME_NOT_A_FRAME",
@@ -863,13 +1152,36 @@ def _validate_pair(
             diagnostics={
                 "still_image_time_seconds": still_image_time_seconds,
                 "frame_times_preview": frame_times[:8],
+                "frame_tolerance_seconds": frame_tolerance,
             },
         )
     timed_metadata = _validate_timed_metadata_track(mov_path, still_image_time_seconds)
+    compatibility_warnings: list[str] = []
+    if duration is not None and duration > 3.05 + 1e-6:
+        compatibility_warnings.append("duration_above_3_seconds")
+    if video_codec not in {"hevc", "h265"}:
+        compatibility_warnings.append("non_hevc_video")
+    if not has_motion_sensor_track:
+        compatibility_warnings.append("motion_sensor_track_missing")
     return {
         "jpg_makernote_uuid": jpg_id,
         "mov_content_identifier": content_id,
         "mov_still_image_time_tag": still_tag,
+        "mov_major_brand": major_brand,
+        "mov_streams": [
+            {
+                "index": stream.get("index"),
+                "codec_type": stream.get("codec_type"),
+                "codec_name": stream.get("codec_name"),
+                "codec_tag_string": stream.get("codec_tag_string"),
+            }
+            for stream in container_streams
+        ],
+        "mov_metadata_keys": sorted(normalized_container_tags),
+        "video_codec": video_codec,
+        **motion_sensor,
+        "iphone_photos_import": "unverified",
+        "compatibility_warnings": compatibility_warnings,
         "mov_contains_pairing_uuid": raw_has_uuid,
         "mov_contains_still_image_time_key": raw_has_still_key,
         **timed_metadata,
@@ -878,8 +1190,10 @@ def _validate_pair(
         "video_frame_count": len(frames),
         "ffprobe_streams": streams,
         "compatibility_note": (
-            "Local MOV/JPG metadata, mebx timed metadata, and decode checks "
-            "passed; iPhone Photos import remains unverified."
+            "Local JPG/MOV pairing, QuickTime metadata, mebx still-image-time, "
+            "and decode checks passed. iPhone Photos import remains unverified; "
+            "the generated resource does not contain a camera motion-sensor "
+            "track unless one is supplied by the source."
         ),
     }
 
@@ -892,17 +1206,24 @@ def pack_live_photo(
     base_name: str | None = None,
     pairing_uuid: str | None = None,
     cover_path: str | Path | None = None,
+    cover_frame_index: int | None = None,
     still_image_time_seconds: float = 0.0,
+    livephoto_duration_seconds: float | None = 3.0,
     toolchain: Toolchain | None = None,
     token: CancellationToken | None = None,
     replace: bool = False,
 ) -> LivePhotoPackResult:
-    """Create a JPG/MOV pair and a versioned manifest from an encoded segment.
+    """Create one ``.livp`` file and a versioned manifest from an encoded segment.
 
     The MOV is copied/remuxed by FFmpeg and then rewritten with a bounded
     ``moov`` parser plus chunked ``mdat`` copy. The output carries Apple's
     ``mebx`` still-image-time track and is locally validated with the same box
-    structure before publication. iPhone Photos import remains unverified.
+    structure before being placed inside the single-file ``.livp`` transport
+    package. iPhone Photos import remains unverified.
+
+    ``livephoto_duration_seconds`` limits only the paired MOV resource. The
+    full exported MP4 remains available beside it, while the Live Photo stays
+    inside the usual short motion window used by iPhone-compatible consumers.
     """
     segment = Path(segment_path)
     destination = Path(output_dir)
@@ -916,6 +1237,18 @@ def pack_live_photo(
             stream_index=None,
             retryable=False,
             message="分段 MP4 不存在",
+        )
+    if livephoto_duration_seconds is not None and (
+        not math.isfinite(livephoto_duration_seconds)
+        or livephoto_duration_seconds <= 0
+    ):
+        raise MediaError(
+            code="INVALID_LIVEPHOTO_DURATION",
+            stage="livephoto",
+            path=str(segment),
+            stream_index=None,
+            retryable=False,
+            message="Live Photo 时长上限必须是正数",
         )
     try:
         pairing = (
@@ -933,11 +1266,10 @@ def pack_live_photo(
     pairing = pairing.upper()
     name = base_name or clip_id
     destination.mkdir(parents=True, exist_ok=True)
-    jpg_target = destination / f"{name}.JPG"
-    mov_target = destination / f"{name}.MOV"
+    livp_target = destination / f"{name}.livp"
     manifest_target = destination / f"{name}.manifest.json"
     if not replace and any(
-        path.exists() for path in (jpg_target, mov_target, manifest_target)
+        path.exists() for path in (livp_target, manifest_target)
     ):
         raise MediaError(
             code="OUTPUT_EXISTS",
@@ -963,8 +1295,32 @@ def pack_live_photo(
         staged_jpg = staging / f"{name}.JPG"
         staged_mov = staging / f"{name}.MOV"
         staged_mov_raw = staging / f"{name}.raw.MOV"
+        staged_livp = staging / f"{name}.livp"
         staged_manifest = staging / f"{name}.manifest.json"
         if cover_path is None:
+            cover_args = [
+                "-map",
+                "0:v:0",
+            ]
+            if cover_frame_index is not None:
+                if int(cover_frame_index) < 0:
+                    raise MediaError(
+                        code="COVER_OUT_OF_RANGE",
+                        stage="livephoto",
+                        path=str(segment),
+                        stream_index=None,
+                        retryable=False,
+                        message="封面帧索引不能为负数",
+                    )
+                cover_args.extend(
+                    [
+                        "-vf",
+                        f"select=eq(n\\,{int(cover_frame_index)})",
+                        "-vsync",
+                        "vfr",
+                    ]
+                )
+            cover_args.extend(["-frames:v", "1", "-q:v", "2", str(staged_jpg)])
             code, _stdout, stderr = _run(
                 [
                     toolchain.ffmpeg.path,
@@ -974,17 +1330,11 @@ def pack_live_photo(
                     "-y",
                     "-i",
                     str(segment),
-                    "-map",
-                    "0:v:0",
-                    "-frames:v",
-                    "1",
-                    "-q:v",
-                    "2",
-                    str(staged_jpg),
+                    *cover_args,
                 ],
                 token=token,
             )
-            if code != 0:
+            if code != 0 or not staged_jpg.exists():
                 raise MediaError(
                     code="COVER_EXTRACTION_FAILED",
                     stage="livephoto",
@@ -1017,8 +1367,26 @@ def pack_live_photo(
                 "-y",
                 "-i",
                 str(segment),
+                *(
+                    ["-t", f"{livephoto_duration_seconds:.6f}"]
+                    if livephoto_duration_seconds is not None
+                    else []
+                ),
                 "-map",
-                "0",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                # A segment can inherit a source timecode/data track.  That
+                # track is useful for editing, but it is not part of the
+                # iPhone Live Photo resource and can make a receiver treat
+                # the MOV as a generic movie.  Keep only the video/audio
+                # resources and rebuild the Live Photo metadata below.
+                "-map_metadata",
+                "-1",
+                "-map_chapters",
+                "-1",
+                "-metadata:s:v:0",
+                "timecode=",
                 "-c",
                 "copy",
                 "-movflags",
@@ -1027,6 +1395,14 @@ def pack_live_photo(
                 f"com.apple.quicktime.content.identifier={pairing}",
                 "-metadata",
                 f"com.apple.quicktime.still-image-time={still_value}",
+                "-metadata",
+                "com.apple.quicktime.live-photo.auto=1",
+                "-metadata",
+                "com.apple.quicktime.live-photo.vitality-score=1.0",
+                "-metadata",
+                "com.apple.quicktime.live-photo.vitality-scoring-version=4",
+                "-metadata",
+                "com.apple.quicktime.full-frame-rate-playback-intent=1",
                 str(staged_mov_raw),
             ],
             token=token,
@@ -1071,17 +1447,28 @@ def pack_live_photo(
             toolchain,
             token,
         )
+        validation["livephoto_duration_cap_seconds"] = livephoto_duration_seconds
+        validation["livp"] = _package_livp(
+            staged_jpg,
+            staged_mov,
+            staged_livp,
+            pairing,
+        )
+        diagnostics.append("livp:" + json.dumps(validation["livp"], ensure_ascii=False, sort_keys=True))
         manifest = LivePhotoManifest(
             manifest_schema_version=1,
             clip_id=clip_id,
             pairing_uuid=pairing,
             still_image_time_seconds=still_image_time_seconds,
-            jpg_path=str(jpg_target),
-            mov_path=str(mov_target),
+            jpg_path=None,
+            mov_path=None,
+            livp_path=str(livp_target),
             jpg_sha256=_sha256(staged_jpg),
             mov_sha256=_sha256(staged_mov),
+            livp_sha256=_sha256(staged_livp),
             jpg_bytes=staged_jpg.stat().st_size,
             mov_bytes=staged_mov.stat().st_size,
+            livp_bytes=staged_livp.stat().st_size,
             duration_seconds=validation.get("duration_seconds"),
             video_frame_count=validation.get("video_frame_count"),
             validation=validation,
@@ -1093,7 +1480,7 @@ def pack_live_photo(
         # Publish only fully validated files.  replace=False is the safe default;
         # M6 can coordinate an explicit replacement transaction when needed.
         if not replace and any(
-            path.exists() for path in (jpg_target, mov_target, manifest_target)
+            path.exists() for path in (livp_target, manifest_target)
         ):
             raise MediaError(
                 code="OUTPUT_EXISTS",
@@ -1103,8 +1490,7 @@ def pack_live_photo(
                 retryable=False,
                 message="Live Photo 输出在校验期间出现同名文件，拒绝覆盖",
             )
-        os.replace(staged_jpg, jpg_target)
-        os.replace(staged_mov, mov_target)
+        os.replace(staged_livp, livp_target)
         os.replace(staged_manifest, manifest_target)
         return LivePhotoPackResult(
             status="complete",

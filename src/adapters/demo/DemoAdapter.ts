@@ -104,7 +104,7 @@ export class DemoAdapter implements V2LPAdapter {
         : { supported: true, note: '仅 HLG → HLG HEVC 10-bit 在验证范围内（模拟）；PQ / Dolby Vision 不支持。' },
       declick_audio: false,
       max_parallel_jobs: 2,
-      livephoto_hint: { short_below_ms: 1000, long_above_ms: 15000 },
+      livephoto_hint: { short_below_ms: 1000, long_above_ms: 3000 },
     }
     this.sim = new ExportSimulator({
       maxSlots: () => this.caps.max_parallel_jobs,
@@ -755,7 +755,7 @@ export class DemoAdapter implements V2LPAdapter {
         free_space_bytes: this.faults.preflightDiskFull ? '1288490188' : '412316860416',
         estimated_bytes: String(totalFrames * 52_000 + clip_ids.length * 900_000),
         existing_outputs: existing,
-        sample_names: { mp4: `${stems[0] ?? 'x'}.mp4`, jpg: `${stems[0] ?? 'x'}.jpg`, mov: `${stems[0] ?? 'x'}.mov` },
+        sample_names: { mp4: `${stems[0] ?? 'x'}.mp4`, livp: `${stems[0] ?? 'x'}.livp` },
       } satisfies PreflightResult
     },
     createBatch: (req: CreateBatchRequest) =>
@@ -866,7 +866,7 @@ export class DemoAdapter implements V2LPAdapter {
             retryable: true,
           })
         }
-        onProgress({ checked: i + 1, total, current: jobs[i] ? `${jobs[i].file_stem}（MP4 / JPG / MOV）` : null })
+        onProgress({ checked: i + 1, total, current: jobs[i] ? `${jobs[i].file_stem}（MP4 / LIVP）` : null })
       }
       const summary: RecoverySummary = {
         project_id,
@@ -884,7 +884,7 @@ export class DemoAdapter implements V2LPAdapter {
           .filter((j) => j.stage === 'interrupted' && j.artifacts.some((a) => a.status === 'verified'))
           .map((j) => ({ clip_id: j.clip_id, display_index: j.display_index, what: '封面 JPG 已生成并通过校验' })),
         needs_relocate: r.project.source.status === 'ok' ? [] : [{ label: '源视频', path_display: r.project.source.path_display }],
-        commit_unknown: jobs.filter((j) => j.stage === 'commit_unknown').map((j) => ({ clip_id: j.clip_id, display_index: j.display_index, detail: 'MP4、JPG 已提交；MOV 写入未完成。旧版 MOV 仍在备份中，已恢复。' })),
+        commit_unknown: jobs.filter((j) => j.stage === 'commit_unknown').map((j) => ({ clip_id: j.clip_id, display_index: j.display_index, detail: 'MP4 已提交；LIVP 写入未完成。旧版文件仍在备份中，已恢复。' })),
         pending_actions: batch ? ['确认后从第一个未完成片段继续编码', '已核实成功的片段不会重新生成'] : ['没有找到中断的批次，可直接关闭恢复提示'],
       }
       return summary

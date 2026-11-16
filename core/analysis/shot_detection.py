@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import sqlite3
+import statistics
 import subprocess
 import threading
 import time
@@ -25,7 +27,7 @@ DETECTION_PROTOCOL_VERSION = "m2.detection.v1"
 class DetectionConfig:
     """Deterministic thresholds; all values are part of the result snapshot."""
 
-    version: str = "m2.config.v1"
+    version: str = "m2.config.v2"
     feature_size: int = 16
     # Luma-only red/blue cuts are around 0.18 normalized SAD; 0.12 keeps
     # ordinary camera motion below the hard-cut gate while covering that case.
@@ -35,6 +37,10 @@ class DetectionConfig:
     dissolve_cumulative_threshold: float = 0.12
     dissolve_min_frames: int = 3
     short_shot_seconds: float = 1.0
+    # A single transition can produce several high-SAD frames.  Treat nearby
+    # candidates as one reviewable boundary so camera motion/flash edges do
+    # not manufacture a run of tiny export clips.
+    min_boundary_gap_seconds: float = 0.2
 
 
 @dataclass(frozen=True)
@@ -517,7 +523,55 @@ def _detect_candidates(
         if key not in seen:
             seen.add(key)
             deduped.append(candidate)
-    return deduped
+    if config.min_boundary_gap_seconds <= 0:
+        raise MediaError(
+            code="DETECTION_CONFIG_INVALID",
+            stage="shot_detection",
+            path=None,
+            stream_index=None,
+            retryable=False,
+            message="相邻候选切点的最小间隔必须大于 0",
+        )
+    pts_deltas = [
+        right.pts - left.pts
+        for left, right in zip(frames, frames[1:])
+        if right.pts > left.pts
+    ]
+    median_pts_delta = statistics.median(pts_deltas) if pts_deltas else 1
+    frame_gap = max(
+        1,
+        math.ceil(
+            config.min_boundary_gap_seconds
+            * frames[0].time_base.den
+            / (frames[0].time_base.num * median_pts_delta)
+        ),
+    )
+
+    def priority(item: CutCandidate) -> tuple[int, float]:
+        # Preserve explicit transition evidence before ordinary hard-cut
+        # evidence; confidence breaks ties within the same kind of evidence.
+        return (
+            3 if item.kind == "black_transition" else 2 if item.review_required else 1,
+            item.confidence,
+        )
+
+    clustered: list[CutCandidate] = []
+    for candidate in deduped:
+        same_black_transition = (
+            clustered
+            and candidate.kind == "black_transition"
+            and clustered[-1].kind == "black_transition"
+        )
+        if (
+            not clustered
+            or candidate.frame_index - clustered[-1].frame_index > frame_gap
+            or same_black_transition
+        ):
+            clustered.append(candidate)
+            continue
+        if priority(candidate) > priority(clustered[-1]):
+            clustered[-1] = candidate
+    return clustered
 
 
 def _pts_end(frames: list[_FrameInfo], end_index: int) -> int:

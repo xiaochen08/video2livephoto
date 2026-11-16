@@ -52,6 +52,7 @@ def test_encode_segment_preserves_confirmed_vfr_display_frame_range(
     )
     frames = _frames(index)
     output = tmp_path / "out" / "clip.mp4"
+    progress: list[float] = []
     result = encode_segment(
         vfr_mp4,
         frames,
@@ -61,6 +62,7 @@ def test_encode_segment_preserves_confirmed_vfr_display_frame_range(
         toolchain=toolchain,
         color_mode="warn",
         prefer_gpu=False,
+        progress_callback=progress.append,
     )
     assert result.status == "complete"
     assert result.encoder == "libx264"
@@ -68,6 +70,9 @@ def test_encode_segment_preserves_confirmed_vfr_display_frame_range(
     assert result.validation["frame_count"] == 11
     assert output.exists()
     assert result.validation["source_frame_range"]["start_display_index"] == 3
+    assert progress
+    assert progress[-1] == pytest.approx(1.0)
+    assert all(previous <= current for previous, current in zip(progress, progress[1:]))
 
 
 def test_encode_gpu_failure_restarts_from_beginning_with_cpu(
@@ -171,6 +176,104 @@ def test_encode_rejects_unknown_color_metadata_by_default(
             prefer_gpu=False,
         )
     assert exc.value.code == "UNKNOWN_COLOR_METADATA"
+
+
+def test_encode_uses_imported_sdr_color_choice_for_unknown_metadata(
+    small_mp4: Path,
+    ffmpeg_path: str,
+    ffprobe_path: str,
+    tmp_path: Path,
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    index = build_frame_index(
+        small_mp4, cache_root=tmp_path / "index", toolchain=toolchain
+    )
+    result = encode_segment(
+        small_mp4,
+        _frames(index),
+        start_display_index=0,
+        end_display_index=2,
+        output_path=tmp_path / "sdr-selected.mp4",
+        toolchain=toolchain,
+        color_mode="sdr",
+        source_color_override="sdr_rec709",
+        prefer_gpu=False,
+    )
+    assert result.status == "complete"
+    assert result.color_transform == "sdr-assumed-rec709"
+
+
+def test_encode_rejects_unknown_import_color_choice(
+    small_mp4: Path,
+    ffmpeg_path: str,
+    ffprobe_path: str,
+    tmp_path: Path,
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    index = build_frame_index(
+        small_mp4, cache_root=tmp_path / "index", toolchain=toolchain
+    )
+    with pytest.raises(MediaError) as exc:
+        encode_segment(
+            small_mp4,
+            _frames(index),
+            start_display_index=0,
+            end_display_index=2,
+            output_path=tmp_path / "invalid-selection.mp4",
+            toolchain=toolchain,
+            color_mode="sdr",
+            source_color_override="not-a-color-choice",
+            prefer_gpu=False,
+        )
+    assert exc.value.code == "INVALID_COLOR_OVERRIDE"
+
+
+def test_encode_uses_imported_hdr_pq_color_choice_for_unknown_metadata(
+    small_mp4: Path,
+    ffmpeg_path: str,
+    ffprobe_path: str,
+    tmp_path: Path,
+) -> None:
+    toolchain = Toolchain.from_paths(ffmpeg_path, ffprobe_path)
+    index = build_frame_index(
+        small_mp4, cache_root=tmp_path / "index", toolchain=toolchain
+    )
+    output = tmp_path / "hdr-selected.mp4"
+    result = encode_segment(
+        small_mp4,
+        _frames(index),
+        start_display_index=0,
+        end_display_index=2,
+        output_path=output,
+        toolchain=toolchain,
+        color_mode="hdr",
+        source_color_override="hdr_pq",
+        prefer_gpu=False,
+    )
+    assert result.status == "complete"
+    assert result.color_transform == "preserve-hdr"
+    probe = subprocess.run(
+        [
+            ffprobe_path,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_entries",
+            "stream=color_space,color_transfer,color_primaries",
+            "-select_streams",
+            "v:0",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    stream = json.loads(probe.stdout)["streams"][0]
+    assert stream["color_transfer"] == "smpte2084"
+    assert stream["color_primaries"] == "bt2020"
 
 
 def test_hdr10_input_is_tone_mapped_to_rec709_when_real_fixture_is_available(

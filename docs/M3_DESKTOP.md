@@ -30,7 +30,7 @@ Renderer 只发送版本化 IPC 请求，不直接读源视频，也不启动 FF
 
 默认导入路径已调用 M2 `detect_shots()`；结果按候选帧边界持久化为待审核切点。`M3ProjectService.import_media(detector=...)` 仍保留可注入检测契约，便于回归和后续算法替换。
 
-用户确认后 IPC `start_export` 将快照写入 M6 SQLite 队列；队列工作器调用 M4 `encode_segment()`、M5 `pack_live_photo()` 和安全提交事务，输出 MP4/JPG/MOV/manifest。未检查切点仍需显式确认，不能自动导出。
+用户确认后 IPC `start_export` 将快照写入 M6 SQLite 队列；队列工作器调用 M4 `encode_segment()`、M5 `pack_live_photo()` 和安全提交事务，输出 MP4/LIVP/manifest。未检查切点仍需显式确认，不能自动导出。
 
 ## 启动与测试
 

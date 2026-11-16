@@ -1,6 +1,6 @@
 import { reactive, shallowRef } from 'vue'
 import type { ProbeResult, RecoverySummary } from '@/adapters/contract'
-import type { AppError, AudioMode, ClipId, CutId, ProjectId } from '@/domain/types'
+import type { AppError, AudioMode, ClipId, CutId, ImportColorSelection, ProjectId } from '@/domain/types'
 
 export type Route = 'boot' | 'connection_error' | 'config_error' | 'home' | 'editor' | 'tasks' | 'settings'
 
@@ -72,6 +72,7 @@ export function createUi() {
     relocate: shallowRef<{ project_id: ProjectId; name: string; reason: 'missing' | 'changed' } | null>(null),
     multiFile: shallowRef<File[] | null>(null),
     streamSelect: shallowRef<{ probe: ProbeResult; resolve: (idx: number | null) => void } | null>(null),
+    colorSelect: shallowRef<{ probe: ProbeResult; streamIndex: number; resolve: (choice: ImportColorSelection | null) => void } | null>(null),
     leaveGuard: shallowRef<{ target: string; resolve: (choice: 'save' | 'discard' | 'cancel') => void } | null>(null),
     closeApp: shallowRef(false),
     report: shallowRef<{ title: string; body: string } | null>(null),
